@@ -82,7 +82,8 @@ CUresult cuDeviceGetLuid(char *luid, unsigned int *deviceNodeMask,
 CUresult cuDeviceTotalMem_v2 ( size_t* bytes, CUdevice dev ) {
     LOG_DEBUG("into cuDeviceTotalMem");
     ENSURE_INITIALIZED();
-    size_t limit = get_current_device_memory_limit(dev);
+    // Convert CUDA device index to NVML device index for memory limit lookup
+    size_t limit = get_current_device_memory_limit(cuda_to_nvml_map(dev));
     *bytes = limit;
     return CUDA_SUCCESS;
 }

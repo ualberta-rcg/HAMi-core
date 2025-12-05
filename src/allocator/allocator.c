@@ -41,17 +41,20 @@ int oom_check(const int dev, size_t addon) {
         cuCtxGetDevice(&d);
     else
         d=dev;
-    uint64_t limit = get_current_device_memory_limit(d);
-    size_t _usage = get_gpu_memory_usage(d);
+    // Convert CUDA device index to NVML device index for memory tracking functions
+    // Memory tracking uses NVML device indices (see add_gpu_device_memory_usage)
+    int nvml_dev = cuda_to_nvml_map(d);
+    uint64_t limit = get_current_device_memory_limit(nvml_dev);
+    size_t _usage = get_gpu_memory_usage(nvml_dev);
 
     if (limit == 0) {
         return 0;
     }
 
     size_t new_allocated = _usage + addon;
-    LOG_INFO("_usage=%lu limit=%lu new_allocated=%lu",_usage,limit,new_allocated);
+    LOG_INFO("_usage=%lu limit=%lu new_allocated=%lu (CUDA dev %d -> NVML dev %d)",_usage,limit,new_allocated,d,nvml_dev);
     if (new_allocated > limit) {
-        LOG_ERROR("Device %d OOM %lu / %lu", d, new_allocated, limit);
+        LOG_ERROR("Device %d (NVML %d) OOM %lu / %lu", d, nvml_dev, new_allocated, limit);
 
         if (clear_proc_slot_nolock(1) > 0)
             return oom_check(dev,addon);

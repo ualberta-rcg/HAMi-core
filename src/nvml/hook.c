@@ -366,14 +366,12 @@ nvmlReturn_t _nvmlDeviceGetMemoryInfo(nvmlDevice_t device,void* memory,int versi
             return NVML_ERROR_INVALID_ARGUMENT;
     }
     CHECK_NVML_API(nvmlDeviceGetIndex(device, &dev_id));
-    int cudadev = nvml_to_cuda_map(dev_id);
-    if (cudadev < 0) {
-        return NVML_SUCCESS;
-    }
-    size_t usage = get_current_device_memory_usage(cudadev);
-    size_t monitor = get_current_device_memory_monitor(cudadev);
-    size_t limit = get_current_device_memory_limit(cudadev);
-    LOG_DEBUG("usage=%ld limit=%ld monitor=%ld", usage, limit, monitor);
+    // dev_id is already an NVML device index - use it directly for memory tracking functions
+    // (no need to convert to CUDA and back)
+    size_t usage = get_current_device_memory_usage(dev_id);
+    size_t monitor = get_current_device_memory_monitor(dev_id);
+    size_t limit = get_current_device_memory_limit(dev_id);
+    LOG_DEBUG("usage=%ld limit=%ld monitor=%ld (NVML dev %u)", usage, limit, monitor, dev_id);
     if (limit == 0) {
         // No limit (e.g., root user) - pass through original NVML values unchanged
         // The original NVML call already set free, total, and used correctly
