@@ -34,6 +34,9 @@ size_t round_up(size_t size, size_t unit) {
 }
 
 int oom_check(const int dev, size_t addon) {
+    // Ensure shared memory region is initialized before checking OOM
+    ensure_initialized();
+    
     int count1=0;
     CUDA_OVERRIDE_CALL(cuda_library_entry,cuDeviceGetCount,&count1);
     CUdevice d;
@@ -43,7 +46,13 @@ int oom_check(const int dev, size_t addon) {
         d=dev;
     // Convert CUDA device index to NVML device index for memory tracking functions
     // Memory tracking uses NVML device indices (see add_gpu_device_memory_usage)
+    // Default mapping is identity (CUDA 0 -> NVML 0) until map_cuda_visible_devices() is called
     int nvml_dev = cuda_to_nvml_map(d);
+    if (nvml_dev < 0 || nvml_dev >= CUDA_DEVICE_MAX_COUNT) {
+        LOG_ERROR("oom_check: Invalid NVML device index %d from CUDA device %d (pid=%d)", nvml_dev, d, getpid());
+        // Fallback to identity mapping for safety
+        nvml_dev = (d >= 0 && d < CUDA_DEVICE_MAX_COUNT) ? d : 0;
+    }
     uint64_t limit = get_current_device_memory_limit(nvml_dev);
     size_t _usage = get_gpu_memory_usage(nvml_dev);
 
@@ -52,9 +61,23 @@ int oom_check(const int dev, size_t addon) {
     }
 
     size_t new_allocated = _usage + addon;
-    LOG_INFO("_usage=%lu limit=%lu new_allocated=%lu (CUDA dev %d -> NVML dev %d)",_usage,limit,new_allocated,d,nvml_dev);
+    // Log detailed info about all processes in shared region for debugging
+    if (region_info.shared_region != NULL) {
+        lock_shrreg();
+        LOG_INFO("oom_check: pid=%d CUDA_dev=%d NVML_dev=%d usage=%lu limit=%lu addon=%lu new_total=%lu proc_num=%d", 
+                 getpid(), d, nvml_dev, _usage, limit, addon, new_allocated, region_info.shared_region->proc_num);
+        for (int i = 0; i < region_info.shared_region->proc_num; i++) {
+            LOG_INFO("  Process[%d]: pid=%d dev[%d].total=%lu", i, 
+                     region_info.shared_region->procs[i].pid, nvml_dev,
+                     region_info.shared_region->procs[i].used[nvml_dev].total);
+        }
+        unlock_shrreg();
+    } else {
+        LOG_INFO("oom_check: pid=%d CUDA_dev=%d NVML_dev=%d usage=%lu limit=%lu addon=%lu new_total=%lu (shared_region NULL)", 
+                 getpid(), d, nvml_dev, _usage, limit, addon, new_allocated);
+    }
     if (new_allocated > limit) {
-        LOG_ERROR("Device %d (NVML %d) OOM %lu / %lu", d, nvml_dev, new_allocated, limit);
+        LOG_ERROR("Device %d (NVML %d) OOM %lu / %lu (pid=%d)", d, nvml_dev, new_allocated, limit, getpid());
 
         if (clear_proc_slot_nolock(1) > 0)
             return oom_check(dev,addon);

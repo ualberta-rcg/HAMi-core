@@ -238,20 +238,26 @@ size_t get_gpu_memory_monitor(const int dev) {
 }
 
 size_t get_gpu_memory_usage(const int dev) {
-    LOG_INFO("get_gpu_memory_usage dev=%d",dev);
+    LOG_INFO("get_gpu_memory_usage dev=%d pid=%d",dev,getpid());
     ensure_initialized();
     if (!is_softmig_enabled() || region_info.shared_region == NULL) {
+        LOG_WARN("get_gpu_memory_usage: softmig disabled or shared_region NULL (pid=%d)", getpid());
         return 0;
     }
     int i=0;
     size_t total=0;
     lock_shrreg();
+    LOG_INFO("get_gpu_memory_usage: proc_num=%d (pid=%d)", region_info.shared_region->proc_num, getpid());
     for (i=0;i<region_info.shared_region->proc_num;i++){
-        LOG_INFO("dev=%d pid=%d host pid=%d i=%lu",dev,region_info.shared_region->procs[i].pid,region_info.shared_region->procs[i].hostpid,region_info.shared_region->procs[i].used[dev].total)
-        total+=region_info.shared_region->procs[i].used[dev].total;
+        size_t proc_usage = region_info.shared_region->procs[i].used[dev].total;
+        LOG_INFO("dev=%d pid=%d host_pid=%d usage=%lu (total so far=%lu)", 
+                 dev, region_info.shared_region->procs[i].pid, 
+                 region_info.shared_region->procs[i].hostpid, proc_usage, total);
+        total+=proc_usage;
     }
     total+=initial_offset;
     unlock_shrreg();
+    LOG_INFO("get_gpu_memory_usage: total=%lu (pid=%d, dev=%d)", total, getpid(), dev);
     return total;
 }
 
@@ -343,16 +349,21 @@ uint64_t nvml_get_device_memory_usage(const int dev) {
 }
 
 int add_gpu_device_memory_usage(int32_t pid,int cudadev,size_t usage,int type){
-    LOG_INFO("add_gpu_device_memory:%d %d->%d %lu",pid,cudadev,cuda_to_nvml_map(cudadev),usage);
+    LOG_INFO("add_gpu_device_memory: pid=%d cuda_dev=%d->nvml_dev=%d usage=%lu type=%d", 
+             pid, cudadev, cuda_to_nvml_map(cudadev), usage, type);
     int dev = cuda_to_nvml_map(cudadev);
     ensure_initialized();
     if (!is_softmig_enabled() || region_info.shared_region == NULL) {
+        LOG_WARN("add_gpu_device_memory: softmig disabled or shared_region NULL (pid=%d)", pid);
         return 0;  // No-op when softmig is disabled
     }
     lock_shrreg();
     int i;
+    int found = 0;
     for (i=0;i<region_info.shared_region->proc_num;i++){
         if (region_info.shared_region->procs[i].pid == pid){
+            found = 1;
+            size_t old_total = region_info.shared_region->procs[i].used[dev].total;
             region_info.shared_region->procs[i].used[dev].total+=usage;
             switch (type) {
                 case 0:{
@@ -367,10 +378,21 @@ int add_gpu_device_memory_usage(int32_t pid,int cudadev,size_t usage,int type){
                     region_info.shared_region->procs[i].used[dev].data_size += usage;
                 }
             }
+            LOG_INFO("add_gpu_device_memory: pid=%d dev=%d old_total=%lu added=%lu new_total=%lu", 
+                     pid, dev, old_total, usage, region_info.shared_region->procs[i].used[dev].total);
+            break;
         }
     }
+    if (!found) {
+        LOG_ERROR("add_gpu_device_memory: PID %d not found in shared region! proc_num=%d (memory not tracked)", 
+                  pid, region_info.shared_region->proc_num);
+        // Process not registered - this is a serious issue, but don't fail allocation
+        // The process should have been registered in init_proc_slot_withlock()
+    }
     unlock_shrreg();
-    LOG_INFO("gpu_device_memory_added:%d %d %lu -> %lu",pid,dev,usage,get_gpu_memory_usage(dev));
+    size_t total_usage = get_gpu_memory_usage(dev);
+    LOG_INFO("gpu_device_memory_added: pid=%d dev=%d added=%lu total_across_all_procs=%lu", 
+             pid, dev, usage, total_usage);
     return 0;
 }
 
@@ -741,6 +763,11 @@ void try_create_shrreg() {
             snprintf(cache_path, sizeof(cache_path), "%s/cudevshr.cache.uid%d.pid%d", tmpdir, uid, pid);
         }
         shr_reg_file = cache_path;
+        LOG_INFO("try_create_shrreg: Using shared memory file: %s (pid=%d, job_id=%s, tmpdir=%s)", 
+                 shr_reg_file, getpid(), job_id ? job_id : "NULL", tmpdir ? tmpdir : "NULL");
+    } else {
+        LOG_INFO("try_create_shrreg: Using custom shared memory file from env: %s (pid=%d)", 
+                 shr_reg_file, getpid());
     }
     // Initialize NVML BEFORE!! open it
     //nvmlInit();
