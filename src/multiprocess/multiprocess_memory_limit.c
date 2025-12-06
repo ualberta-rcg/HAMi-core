@@ -146,8 +146,8 @@ void do_init_device_memory_limits(uint64_t* arr, int len) {
     int i;
     for (i = 0; i < len; ++i) {
         char env_name[CUDA_DEVICE_MEMORY_LIMIT_KEY_LENGTH] = CUDA_DEVICE_MEMORY_LIMIT;
-        char index_name[8];
-        snprintf(index_name, 8, "_%d", i);
+        char index_name[16];  // Increased from 8 to handle large device indices
+        snprintf(index_name, sizeof(index_name), "_%d", i);
         strcat(env_name, index_name);
         size_t cur_limit = get_limit_from_env(env_name);
         if (cur_limit > 0) {
@@ -166,8 +166,8 @@ void do_init_device_sm_limits(uint64_t *arr, int len) {
     int i;
     for (i = 0; i < len; ++i) {
         char env_name[CUDA_DEVICE_SM_LIMIT_KEY_LENGTH] = CUDA_DEVICE_SM_LIMIT;
-        char index_name[8];
-        snprintf(index_name, 8, "_%d", i);
+        char index_name[16];  // Increased from 8 to handle large device indices
+        snprintf(index_name, sizeof(index_name), "_%d", i);
         strcat(env_name, index_name);
         size_t cur_limit = get_limit_from_env(env_name);
         if (cur_limit > 0) {
