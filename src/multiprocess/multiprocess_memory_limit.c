@@ -68,6 +68,12 @@ size_t initial_offset=0;
 // Flag to track if softmig is disabled (when env vars are not set)
 static int softmig_disabled = -1;  // -1 = not checked yet, 0 = enabled, 1 = disabled
 
+// Forward declarations (must be before functions that use them)
+// External function from config_file.c - reads from config file or env
+extern size_t get_limit_from_config_or_env(const char* env_name);
+// Forward declaration - defined in config_file.c
+int is_softmig_configured(void);
+
 /**
  * @brief Check if SoftMig is enabled (passive mode detection)
  * 
@@ -101,11 +107,6 @@ int _record_kernel_interval = 1;
 
 void do_init_device_memory_limits(uint64_t*, int);
 void exit_withlock(int exitcode);
-
-// External function from config_file.c - reads from config file or env
-extern size_t get_limit_from_config_or_env(const char* env_name);
-// Forward declaration - defined in config_file.c
-int is_softmig_configured(void);
 
 /**
  * @brief Set the GPU status for the current process

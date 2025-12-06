@@ -94,7 +94,8 @@ CUresult cuDeviceTotalMem_v2 ( size_t* bytes, CUdevice dev ) {
     size_t real_memory = *bytes;
     
     // Check if softmig is enabled and limits are configured
-    if (!is_softmig_enabled() || region_info.shared_region == NULL) {
+    // is_softmig_enabled() already checks if shared_region is initialized
+    if (!is_softmig_enabled()) {
         // SoftMig not enabled or not initialized yet - return real memory
         LOG_DEBUG("cuDeviceTotalMem_v2: SoftMig disabled or not initialized - returning real memory: %.2f GB (dev=%d, pid=%d)", 
                  real_memory / (1024.0 * 1024.0 * 1024.0), dev, getpid());

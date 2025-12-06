@@ -701,7 +701,7 @@ CUresult cuMemMap( CUdeviceptr ptr, size_t size, size_t offset, CUmemGenericAllo
     if (size > 1024*1024) {
         LOG_INFO("cuMemMap: size=%.2f GB ptr=%llx", size / (1024.0 * 1024.0 * 1024.0), ptr);
     } else {
-        LOG_DIAG("cuMemMap: size=%lu ptr=%llx offset=%llx", size, ptr, offset);
+        LOG_DIAG("cuMemMap: size=%lu ptr=%llx offset=%llx", size, ptr, (unsigned long long)offset);
     }
     CUresult res = CUDA_OVERRIDE_CALL(cuda_library_entry,cuMemMap,ptr,size,offset,handle,flags);
     return res;
