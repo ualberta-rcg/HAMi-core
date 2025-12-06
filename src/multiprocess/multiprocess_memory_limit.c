@@ -371,7 +371,7 @@ size_t get_gpu_memory_monitor(const int dev) {
  * @return Total memory usage in bytes across all processes
  */
 size_t get_gpu_memory_usage(const int dev) {
-    LOG_INFO("get_gpu_memory_usage dev=%d pid=%d",dev,getpid());
+    LOG_INFO("get_gpu_memory_usage: START dev=%d pid=%d", dev, getpid());
     ensure_initialized();
     if (!is_softmig_enabled() || region_info.shared_region == NULL) {
         LOG_WARN("get_gpu_memory_usage: softmig disabled or shared_region NULL (pid=%d)", getpid());
@@ -380,17 +380,36 @@ size_t get_gpu_memory_usage(const int dev) {
     int i=0;
     size_t total=0;
     lock_shrreg();
-    LOG_INFO("get_gpu_memory_usage: proc_num=%d (pid=%d)", region_info.shared_region->proc_num, getpid());
+    LOG_INFO("get_gpu_memory_usage: LOCKED - proc_num=%d (pid=%d, dev=%d)", 
+             region_info.shared_region->proc_num, getpid(), dev);
+    
+    // Log all processes in shared region for debugging
+    LOG_INFO("get_gpu_memory_usage: All processes in shared region (pid=%d, dev=%d):", getpid(), dev);
+    for (i=0; i<region_info.shared_region->proc_num; i++) {
+        LOG_INFO("  Process[%d]: pid=%d, hostpid=%d, status=%d, dev[%d].total=%lu bytes (%.2f GB)", 
+                 i, 
+                 region_info.shared_region->procs[i].pid,
+                 region_info.shared_region->procs[i].hostpid,
+                 region_info.shared_region->procs[i].status,
+                 dev,
+                 region_info.shared_region->procs[i].used[dev].total,
+                 region_info.shared_region->procs[i].used[dev].total / (1024.0 * 1024.0 * 1024.0));
+    }
+    
     for (i=0;i<region_info.shared_region->proc_num;i++){
         size_t proc_usage = region_info.shared_region->procs[i].used[dev].total;
-        LOG_INFO("dev=%d pid=%d host_pid=%d usage=%lu (total so far=%lu)", 
-                 dev, region_info.shared_region->procs[i].pid, 
-                 region_info.shared_region->procs[i].hostpid, proc_usage, total);
+        LOG_INFO("get_gpu_memory_usage: Adding process[%d] pid=%d usage=%lu bytes (%.2f GB) -> running_total=%lu bytes (%.2f GB)", 
+                 i, region_info.shared_region->procs[i].pid, proc_usage,
+                 proc_usage / (1024.0 * 1024.0 * 1024.0),
+                 total, total / (1024.0 * 1024.0 * 1024.0));
         total+=proc_usage;
     }
+    size_t total_before_offset = total;
     total+=initial_offset;
     unlock_shrreg();
-    LOG_INFO("get_gpu_memory_usage: total=%lu (pid=%d, dev=%d)", total, getpid(), dev);
+    LOG_INFO("get_gpu_memory_usage: FINAL total=%lu bytes (%.2f GB) = sum(%lu) + offset(%lu) (pid=%d, dev=%d, proc_num=%d)", 
+             total, total / (1024.0 * 1024.0 * 1024.0),
+             total_before_offset, initial_offset, getpid(), dev, region_info.shared_region->proc_num);
     return total;
 }
 
@@ -519,8 +538,11 @@ int add_gpu_device_memory_usage(int32_t pid,int cudadev,size_t usage,int type){
             found = 1;
             size_t old_total = region_info.shared_region->procs[i].used[dev].total;
             region_info.shared_region->procs[i].used[dev].total+=usage;
-            LOG_DEBUG("add_gpu_device_memory: Found pid=%d at slot %d, dev=%d: %lu -> %lu", 
-                      pid, i, dev, old_total, region_info.shared_region->procs[i].used[dev].total);
+            LOG_INFO("add_gpu_device_memory: Found pid=%d at slot %d, dev=%d: %.2f GB -> %.2f GB (%lu -> %lu bytes)", 
+                     pid, i, dev, 
+                     old_total / (1024.0 * 1024.0 * 1024.0),
+                     region_info.shared_region->procs[i].used[dev].total / (1024.0 * 1024.0 * 1024.0),
+                     old_total, region_info.shared_region->procs[i].used[dev].total);
             switch (type) {
                 case 0:{
                     region_info.shared_region->procs[i].used[dev].context_size += usage;
@@ -554,8 +576,15 @@ int add_gpu_device_memory_usage(int32_t pid,int cudadev,size_t usage,int type){
     }
     unlock_shrreg();
     size_t total_usage = get_gpu_memory_usage(dev);
-    LOG_INFO("gpu_device_memory_added: pid=%d dev=%d added=%lu total_across_all_procs=%lu limit=%lu", 
-             pid, dev, usage, total_usage, get_current_device_memory_limit(dev));
+    size_t limit = get_current_device_memory_limit(dev);
+    LOG_INFO("gpu_device_memory_added: pid=%d dev=%d added=%.2f GB (%.2f%%) total_across_all_procs=%.2f GB limit=%.2f GB", 
+             pid, dev, 
+             usage / (1024.0 * 1024.0 * 1024.0),
+             (limit > 0) ? (100.0 * usage / limit) : 0.0,
+             total_usage / (1024.0 * 1024.0 * 1024.0),
+             limit / (1024.0 * 1024.0 * 1024.0));
+    LOG_INFO("gpu_device_memory_added: pid=%d dev=%d added=%lu bytes total_across_all_procs=%lu bytes limit=%lu bytes", 
+             pid, dev, usage, total_usage, limit);
     return 0;
 }
 
@@ -868,6 +897,14 @@ void init_proc_slot_withlock() {
     if (cleared > 0) {
         LOG_INFO("init_proc_slot_withlock: Cleared %d dead process slot(s) (pid=%d)", cleared, current_pid);
     }
+    
+    // Log final state of all processes after registration
+    LOG_INFO("init_proc_slot_withlock: Final shared region state (pid=%d, proc_num=%d):", current_pid, region->proc_num);
+    for (i=0; i<region->proc_num; i++) {
+        LOG_INFO("  Slot[%d]: pid=%d, hostpid=%d, status=%d", 
+                 i, region->procs[i].pid, region->procs[i].hostpid, region->procs[i].status);
+    }
+    
     unlock_shrreg();
     LOG_INFO("init_proc_slot_withlock: Registration complete (pid=%d, final proc_num=%d)", 
              current_pid, region->proc_num);
@@ -1105,11 +1142,17 @@ void try_create_shrreg() {
 }
 
 void initialized() {
+    // Force log file creation by logging initialization start
+    // This ensures a log file exists even if no errors occur
+    LOG_MSG("SoftMig: Initialization starting (pid=%d, job_id=%s)", 
+            getpid(), getenv("SLURM_JOB_ID") ? getenv("SLURM_JOB_ID") : "N/A");
+    
     LOG_INFO("initialized: Starting initialization (pid=%d)", getpid());
     // Check if softmig should be active (if env vars are set)
     if (!is_softmig_enabled()) {
         // softmig is disabled - don't initialize anything
         LOG_INFO("initialized: SoftMig disabled (passive mode) - skipping initialization (pid=%d)", getpid());
+        LOG_MSG("SoftMig: Passive mode (no limits configured) - pid=%d", getpid());
         return;
     }
     
@@ -1123,6 +1166,8 @@ void initialized() {
     try_create_shrreg();
     init_proc_slot_withlock();
     LOG_INFO("initialized: Initialization complete (pid=%d)", getpid());
+    LOG_MSG("SoftMig: Initialization complete (pid=%d, job_id=%s)", 
+            getpid(), getenv("SLURM_JOB_ID") ? getenv("SLURM_JOB_ID") : "N/A");
 }
 
 void ensure_initialized() {

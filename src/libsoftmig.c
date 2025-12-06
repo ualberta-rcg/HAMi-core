@@ -1003,6 +1003,9 @@ void* __dlsym_hook_section_nvml(void* handle, const char* symbol) {
  * Ensures the shared memory region is initialized for multi-process coordination.
  */
 void preInit(){
+    // Force log file creation early
+    LOG_MSG("SoftMig: Pre-initialization starting (pid=%d, job_id=%s)", 
+            getpid(), getenv("SLURM_JOB_ID") ? getenv("SLURM_JOB_ID") : "N/A");
     LOG_MSG("Initializing.....");
     if (real_dlsym == NULL) {
         real_dlsym = get_real_dlsym_safe();

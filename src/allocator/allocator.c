@@ -108,14 +108,25 @@ int oom_check(const int dev, size_t addon) {
     }
 
     size_t new_allocated = _usage + addon;
-    // Log OOM check details
-    LOG_INFO("oom_check: pid=%d CUDA_dev=%d NVML_dev=%d usage=%lu limit=%lu addon=%lu new_total=%lu", 
+    // Log OOM check details with human-readable sizes
+    LOG_INFO("oom_check: pid=%d CUDA_dev=%d NVML_dev=%d usage=%.2f GB limit=%.2f GB addon=%.2f GB new_total=%.2f GB", 
+             getpid(), d, nvml_dev, 
+             _usage / (1024.0 * 1024.0 * 1024.0),
+             limit / (1024.0 * 1024.0 * 1024.0),
+             addon / (1024.0 * 1024.0 * 1024.0),
+             new_allocated / (1024.0 * 1024.0 * 1024.0));
+    LOG_INFO("oom_check: pid=%d CUDA_dev=%d NVML_dev=%d usage=%lu bytes limit=%lu bytes addon=%lu bytes new_total=%lu bytes", 
              getpid(), d, nvml_dev, _usage, limit, addon, new_allocated);
     LOG_DEBUG("oom_check: Current usage breakdown: _usage=%lu (from get_gpu_memory_usage), addon=%lu, limit=%lu", 
               _usage, addon, limit);
     if (new_allocated > limit) {
-        LOG_ERROR("oom_check: Device %d (NVML %d) OOM! %lu / %lu (pid=%d, exceeded by %lu bytes)", 
-                  d, nvml_dev, new_allocated, limit, getpid(), new_allocated - limit);
+        LOG_ERROR("oom_check: Device %d (NVML %d) OOM! %.2f GB / %.2f GB (pid=%d, exceeded by %.2f GB / %lu bytes)", 
+                  d, nvml_dev, 
+                  new_allocated / (1024.0 * 1024.0 * 1024.0),
+                  limit / (1024.0 * 1024.0 * 1024.0),
+                  getpid(),
+                  (new_allocated - limit) / (1024.0 * 1024.0 * 1024.0),
+                  new_allocated - limit);
 
         if (clear_proc_slot_nolock(1) > 0)
             return oom_check(dev,addon);
