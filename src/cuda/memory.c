@@ -769,10 +769,45 @@ CUresult cuMemPoolDestroy(CUmemoryPool pool) {
 }
 
 CUresult cuMemAllocFromPoolAsync(CUdeviceptr *dptr, size_t bytesize, CUmemoryPool pool, CUstream hStream) {
-    LOG_WARN("cuMemAllocFromPoolAsync: bytesize=%lu (%.2f GB) - NOT TRACKED! This allocation bypasses memory limits!", 
-             bytesize, bytesize / (1024.0 * 1024.0 * 1024.0));
-    // TODO: This should be tracked but currently just passes through
-    return CUDA_OVERRIDE_CALL(cuda_library_entry,cuMemAllocFromPoolAsync,dptr,bytesize,pool,hStream);
+    // Only log large allocations (>1MB) at INFO
+    if (bytesize > 1024*1024) {
+        LOG_INFO("cuMemAllocFromPoolAsync: bytesize=%.2f GB pool=%p", 
+                 bytesize / (1024.0 * 1024.0 * 1024.0), pool);
+    } else {
+        LOG_DIAG("cuMemAllocFromPoolAsync: bytesize=%lu pool=%p stream=%p", bytesize, pool, hStream);
+    }
+    
+    ENSURE_RUNNING();
+    CUdevice dev;
+    CUDA_OVERRIDE_CALL(cuda_library_entry, cuCtxGetDevice, &dev);
+    
+    // Perform OOM check before allocation (same as cuMemAllocAsync)
+    if (oom_check(dev, bytesize)) {
+        LOG_ERROR("cuMemAllocFromPoolAsync: OOM check failed - bytesize=%.2f GB would exceed limit", 
+                  bytesize / (1024.0 * 1024.0 * 1024.0));
+        return CUDA_ERROR_OUT_OF_MEMORY;
+    }
+    
+    // Allocate from pool
+    CUresult res = CUDA_OVERRIDE_CALL(cuda_library_entry,cuMemAllocFromPoolAsync,dptr,bytesize,pool,hStream);
+    
+    if (res == CUDA_SUCCESS) {
+        // Track the allocation (same as cuMemAllocAsync)
+        // Note: Pool allocations still count against the device memory limit
+        CUdevice nvml_dev = cuda_to_nvml_map(dev);
+        if (nvml_dev >= 0 && nvml_dev < CUDA_DEVICE_MAX_COUNT) {
+            add_gpu_device_memory_usage(getpid(), nvml_dev, bytesize, 2); // type 2 = async
+        }
+        if (bytesize > 1024*1024) {
+            LOG_INFO("cuMemAllocFromPoolAsync: Successfully allocated %.2f GB from pool (now tracked)", 
+                     bytesize / (1024.0 * 1024.0 * 1024.0));
+        }
+    } else if (bytesize > 1024*1024) {
+        LOG_ERROR("cuMemAllocFromPoolAsync failed: res=%d bytesize=%.2f GB", res, 
+                  bytesize / (1024.0 * 1024.0 * 1024.0));
+    }
+    
+    return res;
 }
 
 CUresult cuMemPoolExportToShareableHandle(void *handle_out, CUmemoryPool pool, CUmemAllocationHandleType handleType, unsigned long long flags) {

@@ -390,6 +390,19 @@ CUresult _cuGetProcAddress_v2(const char *symbol, void **pfn, int cudaVersion, c
 CUresult cuGetProcAddress_v2(const char *symbol, void **pfn, int cudaVersion, cuuint64_t flags, CUdriverProcAddressQueryResult *symbolStatus){
     LOG_INFO("into cuGetProcAddress_v2 symbol=%s:%d",symbol,cudaVersion);
     *pfn = find_symbols_in_table_by_cudaversion(symbol, cudaVersion);
+    
+    // Log critical allocation functions to see if we're returning our hook
+    if (strcmp(symbol, "cuMemAllocFromPoolAsync") == 0 || 
+        strcmp(symbol, "cuMemAllocAsync") == 0 ||
+        strcmp(symbol, "cuMemAlloc") == 0 ||
+        strcmp(symbol, "cuMemAlloc_v2") == 0) {
+        if (*pfn != NULL) {
+            LOG_INFO("cuGetProcAddress_v2: Returning HOOKED function for %s (pfn=%p)", symbol, *pfn);
+        } else {
+            LOG_WARN("cuGetProcAddress_v2: Hook NOT FOUND for %s - will return REAL function (bypasses tracking!)", symbol);
+        }
+    }
+    
     if (strcmp(symbol,"cuGetProcAddress_v2")==0) {
         CUresult res = CUDA_OVERRIDE_CALL(cuda_library_entry,cuGetProcAddress_v2,symbol,pfn,cudaVersion,flags,symbolStatus); 
         if (res==CUDA_SUCCESS) {
@@ -399,6 +412,8 @@ CUresult cuGetProcAddress_v2(const char *symbol, void **pfn, int cudaVersion, cu
         return res;
     }
     if (*pfn==NULL){
+        // Hook not found - fall back to real function (THIS BYPASSES OUR TRACKING!)
+        LOG_WARN("cuGetProcAddress_v2: Symbol %s not in hook table, returning real function pointer", symbol);
         CUresult res = CUDA_OVERRIDE_CALL(cuda_library_entry,cuGetProcAddress_v2,symbol,pfn,cudaVersion,flags,symbolStatus);
         return res;
     }else{
