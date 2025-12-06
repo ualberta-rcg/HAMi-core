@@ -26,7 +26,7 @@ static inline char* get_log_file_path(void) {
     // Check for custom log path
     char* custom_log = getenv("SOFTMIG_LOG_FILE");
     if (custom_log != NULL && strlen(custom_log) > 0) {
-        strncpy(log_path, custom_log, sizeof(log_path) - 1);
+        snprintf(log_path, sizeof(log_path), "%s", custom_log);
         log_path[sizeof(log_path) - 1] = '\0';
         initialized = 1;
         return log_path;
@@ -78,7 +78,8 @@ static inline char* get_log_file_path(void) {
     
     // Create directory if it doesn't exist (try, but don't fail if no permission)
     char dir_path[512];
-    strncpy(dir_path, log_path, sizeof(dir_path) - 1);
+    snprintf(dir_path, sizeof(dir_path), "%s", log_path);
+    dir_path[sizeof(dir_path) - 1] = '\0';
     char* last_slash = strrchr(dir_path, '/');
     if (last_slash != NULL) {
         *last_slash = '\0';
