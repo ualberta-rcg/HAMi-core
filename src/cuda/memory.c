@@ -769,12 +769,14 @@ CUresult cuMemPoolDestroy(CUmemoryPool pool) {
 }
 
 CUresult cuMemAllocFromPoolAsync(CUdeviceptr *dptr, size_t bytesize, CUmemoryPool pool, CUstream hStream) {
-    // Only log large allocations (>1MB) at INFO
+    // ALWAYS log when this function is called (even small allocations) to confirm it's being invoked
+    // This is critical for debugging - we need to know if gpu_burn is actually calling this
     if (bytesize > 1024*1024) {
-        LOG_INFO("cuMemAllocFromPoolAsync: bytesize=%.2f GB pool=%p", 
-                 bytesize / (1024.0 * 1024.0 * 1024.0), pool);
+        LOG_INFO("cuMemAllocFromPoolAsync: CALLED! bytesize=%.2f GB pool=%p stream=%p (pid=%d)", 
+                 bytesize / (1024.0 * 1024.0 * 1024.0), pool, hStream, getpid());
     } else {
-        LOG_DIAG("cuMemAllocFromPoolAsync: bytesize=%lu pool=%p stream=%p", bytesize, pool, hStream);
+        LOG_INFO("cuMemAllocFromPoolAsync: CALLED! bytesize=%lu bytes (%.2f MB) pool=%p stream=%p (pid=%d)", 
+                 bytesize, bytesize / (1024.0 * 1024.0), pool, hStream, getpid());
     }
     
     ENSURE_RUNNING();
