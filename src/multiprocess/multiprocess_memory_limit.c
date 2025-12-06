@@ -87,7 +87,7 @@ int is_softmig_configured(void);
  * 
  * @return 1 if enabled (limits configured), 0 if disabled (passive mode)
  */
-static int is_softmig_enabled(void) {
+int is_softmig_enabled(void) {
     if (softmig_disabled == -1) {
         // First time check - see if environment variables are configured
         if (!is_softmig_configured()) {
