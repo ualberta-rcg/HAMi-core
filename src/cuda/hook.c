@@ -62,6 +62,7 @@ cuda_entry_t cuda_library_entry[] = {
     {.name = "cuArray3DCreate_v2"},
     {.name = "cuArrayCreate_v2"},
     {.name = "cuArrayDestroy"},
+    {.name = "cuMemAlloc"},  // cuMemAlloc (without suffix) - explicit hook
     {.name = "cuMemAlloc_v2"},
     {.name = "cuMemAllocHost_v2"},
     {.name = "cuMemAllocManaged"},

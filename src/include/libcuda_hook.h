@@ -93,6 +93,7 @@ typedef enum {
     CUDA_OVERRIDE_ENUM(cuArray3DCreate_v2),
     CUDA_OVERRIDE_ENUM(cuArrayCreate_v2),
     CUDA_OVERRIDE_ENUM(cuArrayDestroy),
+    CUDA_OVERRIDE_ENUM(cuMemAlloc),  // cuMemAlloc (without suffix) - explicit hook
     CUDA_OVERRIDE_ENUM(cuMemAlloc_v2),
     CUDA_OVERRIDE_ENUM(cuMemAllocHost_v2),
     CUDA_OVERRIDE_ENUM(cuMemAllocManaged),

@@ -144,6 +144,19 @@ CUresult cuMemoryAllocate(CUdeviceptr* dptr, size_t bytesize, void* data) {
     return res;
 }
 
+// cuMemAlloc (without suffix) - typically resolves to cuMemAlloc_v2 via cuGetProcAddress
+// But we hook it explicitly to ensure it's intercepted
+CUresult cuMemAlloc(CUdeviceptr* dptr, size_t bytesize) {
+    // Only log large allocations (>1MB) at INFO, small ones at DIAG
+    if (bytesize > 1024*1024) {
+        LOG_INFO("cuMemAlloc (no suffix): bytesize=%.2f GB", bytesize / (1024.0 * 1024.0 * 1024.0));
+    } else {
+        LOG_DIAG("cuMemAlloc (no suffix): dptr=%p bytesize=%lu", dptr, bytesize);
+    }
+    // Delegate to cuMemAlloc_v2
+    return cuMemAlloc_v2(dptr, bytesize);
+}
+
 CUresult cuMemAlloc_v2(CUdeviceptr* dptr, size_t bytesize) {
     // Only log large allocations (>1MB) at INFO, small ones at DIAG
     if (bytesize > 1024*1024) {

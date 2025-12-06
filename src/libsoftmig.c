@@ -314,6 +314,7 @@ void* __dlsym_hook_section(void* handle, const char* symbol) {
     DLSYM_HOOK_FUNC(cuArray3DCreate_v2);
     DLSYM_HOOK_FUNC(cuArrayCreate_v2);
     DLSYM_HOOK_FUNC(cuArrayDestroy);
+    DLSYM_HOOK_FUNC(cuMemAlloc);  // Hook cuMemAlloc (without suffix) explicitly
     DLSYM_HOOK_FUNC(cuMemAlloc_v2);
     DLSYM_HOOK_FUNC(cuMemAllocHost_v2);
     DLSYM_HOOK_FUNC(cuMemAllocManaged);
