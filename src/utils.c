@@ -298,24 +298,30 @@ nvmlReturn_t set_task_pid() {
 
 int parse_cuda_visible_env() {
     char *s = getenv("CUDA_VISIBLE_DEVICES");
+    LOG_INFO("parse_cuda_visible_env: CUDA_VISIBLE_DEVICES=%s (pid=%d)", s ? s : "NULL", getpid());
     int count = 0;
     for (int i = 0; i < CUDA_DEVICE_MAX_COUNT; i++) {
         cuda_to_nvml_map_array[i] = i;
     }
 
     if (need_cuda_virtualize()) {
+        LOG_INFO("parse_cuda_visible_env: CUDA virtualization needed, parsing device list (pid=%d)", getpid());
         for (int i = 0; i < strlen(s); i++) {
             if ((s[i] == ',') || (i == 0)) {
                 int tmp = (i==0) ? atoi(s) : atoi(s + i +1);
                 cuda_to_nvml_map_array[count] = tmp; 
+                LOG_DEBUG("parse_cuda_visible_env: CUDA device %d -> NVML device %d", count, tmp);
                 count++;
             }
         } 
+        LOG_INFO("parse_cuda_visible_env: Mapped %d CUDA devices (pid=%d)", count, getpid());
+    } else {
+        LOG_INFO("parse_cuda_visible_env: No CUDA virtualization, using identity mapping (pid=%d)", getpid());
     }
     for (int i = 0; i < CUDA_DEVICE_MAX_COUNT; i++) {
         LOG_INFO("device %d -> %d",i,cuda_to_nvml_map(i));
     }
-    LOG_INFO("get default cuda from %s", getenv("CUDA_VISIBLE_DEVICES"));
+    LOG_INFO("parse_cuda_visible_env: Device mapping complete (pid=%d)", getpid());
     return count;
 }
 
@@ -333,7 +339,9 @@ int parse_cuda_visible_env() {
  * @return 0 on success
  */
 int map_cuda_visible_devices() {
+    LOG_INFO("map_cuda_visible_devices: Starting device mapping (pid=%d)", getpid());
     parse_cuda_visible_env();
+    LOG_INFO("map_cuda_visible_devices: Device mapping complete (pid=%d)", getpid());
     return 0;
 }
 

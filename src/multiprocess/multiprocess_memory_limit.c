@@ -507,14 +507,20 @@ int add_gpu_device_memory_usage(int32_t pid,int cudadev,size_t usage,int type){
         LOG_WARN("add_gpu_device_memory: softmig disabled or shared_region NULL (pid=%d)", pid);
         return 0;  // No-op when softmig is disabled
     }
+    LOG_DEBUG("add_gpu_device_memory: Acquiring lock (pid=%d, proc_num=%d)", 
+              pid, region_info.shared_region->proc_num);
     lock_shrreg();
     int i;
     int found = 0;
+    LOG_DEBUG("add_gpu_device_memory: Searching for pid=%d in %d processes", 
+              pid, region_info.shared_region->proc_num);
     for (i=0;i<region_info.shared_region->proc_num;i++){
         if (region_info.shared_region->procs[i].pid == pid){
             found = 1;
             size_t old_total = region_info.shared_region->procs[i].used[dev].total;
             region_info.shared_region->procs[i].used[dev].total+=usage;
+            LOG_DEBUG("add_gpu_device_memory: Found pid=%d at slot %d, dev=%d: %lu -> %lu", 
+                      pid, i, dev, old_total, region_info.shared_region->procs[i].used[dev].total);
             switch (type) {
                 case 0:{
                     region_info.shared_region->procs[i].used[dev].context_size += usage;
@@ -536,13 +542,20 @@ int add_gpu_device_memory_usage(int32_t pid,int cudadev,size_t usage,int type){
     if (!found) {
         LOG_ERROR("add_gpu_device_memory: PID %d not found in shared region! proc_num=%d (memory not tracked)", 
                   pid, region_info.shared_region->proc_num);
+        LOG_ERROR("add_gpu_device_memory: Current processes in shared region:");
+        for (i=0; i<region_info.shared_region->proc_num; i++) {
+            LOG_ERROR("  Slot[%d]: pid=%d, hostpid=%d, dev[%d].total=%lu", 
+                      i, region_info.shared_region->procs[i].pid,
+                      region_info.shared_region->procs[i].hostpid, dev,
+                      region_info.shared_region->procs[i].used[dev].total);
+        }
         // Process not registered - this is a serious issue, but don't fail allocation
         // The process should have been registered in init_proc_slot_withlock()
     }
     unlock_shrreg();
     size_t total_usage = get_gpu_memory_usage(dev);
-    LOG_INFO("gpu_device_memory_added: pid=%d dev=%d added=%lu total_across_all_procs=%lu", 
-             pid, dev, usage, total_usage);
+    LOG_INFO("gpu_device_memory_added: pid=%d dev=%d added=%lu total_across_all_procs=%lu limit=%lu", 
+             pid, dev, usage, total_usage, get_current_device_memory_limit(dev));
     return 0;
 }
 
@@ -651,31 +664,43 @@ void exit_handler() {
     }
     
     int slot = 0;
-    LOG_MSG("Calling exit handler %d",getpid());
+    LOG_INFO("exit_handler: Process exiting (pid=%d, proc_num=%d)", getpid(), region->proc_num);
     
     // Clean up config file (delete it)
     cleanup_config_file();
     
     struct timespec sem_ts;
     get_timespec(SEM_WAIT_TIME_ON_EXIT, &sem_ts);
+    LOG_DEBUG("exit_handler: Attempting to acquire lock for cleanup (pid=%d)", getpid());
     int status = sem_timedwait(&region->sem, &sem_ts);
     if (status == 0) {  // just give up on lock failure
         region->owner_pid = region_info.pid;
+        LOG_DEBUG("exit_handler: Lock acquired, searching for pid=%d in %d processes", 
+                  region_info.pid, region->proc_num);
         while (slot < region->proc_num) {
             if (region->procs[slot].pid == region_info.pid) {
+                LOG_INFO("exit_handler: Found process slot %d for pid=%d, removing (pid=%d)", 
+                         slot, region_info.pid, getpid());
                 memset(region->procs[slot].used,0,sizeof(device_memory_t)*CUDA_DEVICE_MAX_COUNT);
                 memset(region->procs[slot].device_util,0,sizeof(device_util_t)*CUDA_DEVICE_MAX_COUNT);
                 region->proc_num--;
                 region->procs[slot] = region->procs[region->proc_num];
+                LOG_INFO("exit_handler: Process removed, new proc_num=%d (pid=%d)", 
+                         region->proc_num, getpid());
                 break;
             }
             slot++;
         }
+        if (slot >= region->proc_num) {
+            LOG_WARN("exit_handler: PID %d not found in shared region (pid=%d)", 
+                     region_info.pid, getpid());
+        }
         __sync_synchronize();
         region->owner_pid = 0;
         sem_post(&region->sem);
+        LOG_DEBUG("exit_handler: Lock released, cleanup complete (pid=%d)", getpid());
     } else {
-        LOG_WARN("Failed to take lock on exit: errno=%d", errno);
+        LOG_WARN("exit_handler: Failed to take lock on exit: errno=%d (pid=%d)", errno, getpid());
     }
 }
 
@@ -694,6 +719,8 @@ void lock_shrreg() {
     if (!is_softmig_enabled() || region_info.shared_region == NULL) {
         return;  // No-op when softmig is disabled
     }
+    LOG_DEBUG("lock_shrreg: Attempting to acquire lock (pid=%d, owner_pid=%ld)", 
+              getpid(), region_info.shared_region ? region_info.shared_region->owner_pid : -1);
     struct timespec sem_ts;
     get_timespec(SEM_WAIT_TIME, &sem_ts);
     shared_region_t* region = region_info.shared_region;
@@ -701,12 +728,15 @@ void lock_shrreg() {
     while (1) {
         int status = sem_timedwait(&region->sem, &sem_ts);
         SEQ_POINT_MARK(SEQ_ACQUIRE_SEMLOCK_OK);
+        LOG_DEBUG("lock_shrreg: sem_timedwait returned %d (pid=%d, errno=%d)", status, getpid(), errno);
 
         if (status == 0) {
             // TODO: irregular exit here will hang pending locks
             region->owner_pid = region_info.pid;
             __sync_synchronize();
             SEQ_POINT_MARK(SEQ_UPDATE_OWNER_OK);
+            LOG_DEBUG("lock_shrreg: Lock acquired successfully (pid=%d, owner_pid=%ld)", 
+                      getpid(), region->owner_pid);
             trials = 0;
             break;
         } else if (errno == ETIMEDOUT) {
@@ -743,6 +773,8 @@ void unlock_shrreg() {
     if (!is_softmig_enabled() || region_info.shared_region == NULL) {
         return;  // No-op when softmig is disabled
     }
+    LOG_DEBUG("unlock_shrreg: Releasing lock (pid=%d, owner_pid=%ld)", 
+              getpid(), region_info.shared_region->owner_pid);
     SEQ_POINT_MARK(SEQ_BEFORE_UNLOCK_SHRREG);
     shared_region_t* region = region_info.shared_region;
 
@@ -753,6 +785,7 @@ void unlock_shrreg() {
 
     sem_post(&region->sem);
     SEQ_POINT_MARK(SEQ_RELEASE_SEMLOCK_OK);
+    LOG_DEBUG("unlock_shrreg: Lock released (pid=%d)", getpid());
 }
 
 
@@ -794,9 +827,13 @@ int clear_proc_slot_nolock(int do_clear) {
  */
 void init_proc_slot_withlock() {
     int32_t current_pid = getpid();
+    LOG_INFO("init_proc_slot_withlock: Registering process (pid=%d, current proc_num=%d)", 
+             current_pid, region_info.shared_region ? region_info.shared_region->proc_num : -1);
     lock_shrreg();
     shared_region_t* region = region_info.shared_region;
     if (region->proc_num >= SHARED_REGION_MAX_PROCESS_NUM) {
+        LOG_ERROR("init_proc_slot_withlock: Shared region full! proc_num=%d >= max=%d (pid=%d)", 
+                  region->proc_num, SHARED_REGION_MAX_PROCESS_NUM, current_pid);
         exit_withlock(-1);
     }
     signal(SIGUSR2,sig_swap_stub);
@@ -806,6 +843,8 @@ void init_proc_slot_withlock() {
     int i,found=0;
     for (i=0; i<region->proc_num; i++) {
         if (region->procs[i].pid == current_pid) {
+            LOG_INFO("init_proc_slot_withlock: Found existing slot for pid=%d at index %d, resetting (pid=%d)", 
+                     current_pid, i, current_pid);
             region->procs[i].status = 1;
             memset(region->procs[i].used,0,sizeof(device_memory_t)*CUDA_DEVICE_MAX_COUNT);
             memset(region->procs[i].device_util,0,sizeof(device_util_t)*CUDA_DEVICE_MAX_COUNT);
@@ -814,15 +853,24 @@ void init_proc_slot_withlock() {
         }
     }
     if (!found) {
+        LOG_INFO("init_proc_slot_withlock: Creating new slot for pid=%d at index %d (pid=%d)", 
+                 current_pid, region->proc_num, current_pid);
         region->procs[region->proc_num].pid = current_pid;
         region->procs[region->proc_num].status = 1;
         memset(region->procs[region->proc_num].used,0,sizeof(device_memory_t)*CUDA_DEVICE_MAX_COUNT);
         memset(region->procs[region->proc_num].device_util,0,sizeof(device_util_t)*CUDA_DEVICE_MAX_COUNT);
         region->proc_num++;
+        LOG_INFO("init_proc_slot_withlock: Process registered successfully (pid=%d, new proc_num=%d)", 
+                 current_pid, region->proc_num);
     }
 
-    clear_proc_slot_nolock(1);
+    int cleared = clear_proc_slot_nolock(1);
+    if (cleared > 0) {
+        LOG_INFO("init_proc_slot_withlock: Cleared %d dead process slot(s) (pid=%d)", cleared, current_pid);
+    }
     unlock_shrreg();
+    LOG_INFO("init_proc_slot_withlock: Registration complete (pid=%d, final proc_num=%d)", 
+             current_pid, region->proc_num);
 }
 
 void print_all() {
@@ -892,7 +940,7 @@ int set_env_utilization_switch() {
  * while different jobs are isolated.
  */
 void try_create_shrreg() {
-    LOG_DEBUG("Try create shrreg")
+    LOG_INFO("try_create_shrreg: Starting (pid=%d)", getpid());
     if (region_info.fd == -1) {
         // use .fd to indicate whether a reinit after fork happen
         // no need to register exit handler after fork
@@ -960,9 +1008,12 @@ void try_create_shrreg() {
     /* If you need sm modification, do it here */
     /* ... set_sm_scale */
 
+    LOG_INFO("try_create_shrreg: Opening shared memory file: %s (pid=%d)", shr_reg_file, getpid());
     int fd = open(shr_reg_file, O_RDWR | O_CREAT, 0666);
     if (fd == -1) {
         LOG_ERROR("Fail to open shrreg %s: errno=%d", shr_reg_file, errno);
+    } else {
+        LOG_INFO("try_create_shrreg: Successfully opened file descriptor %d (pid=%d)", fd, getpid());
     }
     region_info.fd = fd;
     size_t offset = lseek(fd, SHARED_REGION_SIZE_MAGIC, SEEK_SET);
@@ -976,12 +1027,15 @@ void try_create_shrreg() {
     if (lseek(fd, 0, SEEK_SET) != 0) {
         LOG_ERROR("Fail to reseek shrreg %s: errno=%d", shr_reg_file, errno);
     }
+    LOG_INFO("try_create_shrreg: Mapping shared memory (size=%zu, pid=%d)", SHARED_REGION_SIZE_MAGIC, getpid());
     region_info.shared_region = (shared_region_t*) mmap(
         NULL, SHARED_REGION_SIZE_MAGIC, 
         PROT_WRITE | PROT_READ, MAP_SHARED, fd, 0);
     shared_region_t* region = region_info.shared_region;
     if (region == NULL) {
         LOG_ERROR("Fail to map shrreg %s: errno=%d", shr_reg_file, errno);
+    } else {
+        LOG_INFO("try_create_shrreg: Successfully mapped shared memory at %p (pid=%d)", (void*)region, getpid());
     }
     if (lockf(fd, F_LOCK, SHARED_REGION_SIZE_MAGIC) != 0) {
         LOG_ERROR("Fail to lock shrreg %s: errno=%d", shr_reg_file, errno);
@@ -989,12 +1043,15 @@ void try_create_shrreg() {
     //put_device_info();
     if (region->initialized_flag != 
           MULTIPROCESS_SHARED_REGION_MAGIC_FLAG) {
+        LOG_INFO("try_create_shrreg: Initializing new shared region (pid=%d, proc_num=%d)", getpid(), region->proc_num);
         region->major_version = MAJOR_VERSION;
         region->minor_version = MINOR_VERSION;
         do_init_device_memory_limits(
             region->limit, CUDA_DEVICE_MAX_COUNT);
         do_init_device_sm_limits(
             region->sm_limit,CUDA_DEVICE_MAX_COUNT);
+        LOG_INFO("try_create_shrreg: Initialized limits - device 0: memory=%lu bytes, sm=%lu%% (pid=%d)", 
+                 region->limit[0], region->sm_limit[0], getpid());
         if (sem_init(&region->sem, 1, 1) != 0) {
             LOG_ERROR("Fail to init sem %s: errno=%d", shr_reg_file, errno);
         }
@@ -1006,7 +1063,10 @@ void try_create_shrreg() {
         if (getenv(CUDA_TASK_PRIORITY_ENV)!=NULL)
             region->priority = atoi(getenv(CUDA_TASK_PRIORITY_ENV));
         region->initialized_flag = MULTIPROCESS_SHARED_REGION_MAGIC_FLAG;
+        LOG_INFO("try_create_shrreg: Shared region initialized (pid=%d)", getpid());
     } else {
+        LOG_INFO("try_create_shrreg: Attaching to existing shared region (pid=%d, proc_num=%d, version=%d.%d)", 
+                 getpid(), region->proc_num, region->major_version, region->minor_version);
         if (region->major_version != MAJOR_VERSION || 
                 region->minor_version != MINOR_VERSION) {
             LOG_ERROR("The current version number %d.%d"
@@ -1045,19 +1105,24 @@ void try_create_shrreg() {
 }
 
 void initialized() {
+    LOG_INFO("initialized: Starting initialization (pid=%d)", getpid());
     // Check if softmig should be active (if env vars are set)
     if (!is_softmig_enabled()) {
         // softmig is disabled - don't initialize anything
+        LOG_INFO("initialized: SoftMig disabled (passive mode) - skipping initialization (pid=%d)", getpid());
         return;
     }
     
+    LOG_INFO("initialized: SoftMig enabled - proceeding with initialization (pid=%d)", getpid());
     pthread_mutex_init(&_kernel_mutex, NULL);
     char* _record_kernel_interval_env = getenv("RECORD_KERNEL_INTERVAL");
     if (_record_kernel_interval_env) {
         _record_kernel_interval = atoi(_record_kernel_interval_env);
+        LOG_INFO("initialized: RECORD_KERNEL_INTERVAL=%d (pid=%d)", _record_kernel_interval, getpid());
     }
     try_create_shrreg();
     init_proc_slot_withlock();
+    LOG_INFO("initialized: Initialization complete (pid=%d)", getpid());
 }
 
 void ensure_initialized() {

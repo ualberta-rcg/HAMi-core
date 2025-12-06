@@ -111,8 +111,11 @@ int oom_check(const int dev, size_t addon) {
     // Log OOM check details
     LOG_INFO("oom_check: pid=%d CUDA_dev=%d NVML_dev=%d usage=%lu limit=%lu addon=%lu new_total=%lu", 
              getpid(), d, nvml_dev, _usage, limit, addon, new_allocated);
+    LOG_DEBUG("oom_check: Current usage breakdown: _usage=%lu (from get_gpu_memory_usage), addon=%lu, limit=%lu", 
+              _usage, addon, limit);
     if (new_allocated > limit) {
-        LOG_ERROR("Device %d (NVML %d) OOM %lu / %lu (pid=%d)", d, nvml_dev, new_allocated, limit, getpid());
+        LOG_ERROR("oom_check: Device %d (NVML %d) OOM! %lu / %lu (pid=%d, exceeded by %lu bytes)", 
+                  d, nvml_dev, new_allocated, limit, getpid(), new_allocated - limit);
 
         if (clear_proc_slot_nolock(1) > 0)
             return oom_check(dev,addon);
