@@ -80,24 +80,49 @@ CUresult cuDeviceGetLuid(char *luid, unsigned int *deviceNodeMask,
 }
 
 CUresult cuDeviceTotalMem_v2 ( size_t* bytes, CUdevice dev ) {
-    LOG_DEBUG("into cuDeviceTotalMem dev=%d", dev);
-    ENSURE_INITIALIZED();
+    LOG_DEBUG("into cuDeviceTotalMem dev=%d (pid=%d)", dev, getpid());
+    
+    // Ensure initialization (but don't block if it fails - might be called before cuInit)
+    ensure_initialized();
+    
+    // Get real physical memory first (as fallback)
+    CUresult res = CUDA_OVERRIDE_CALL(cuda_library_entry, cuDeviceTotalMem_v2, bytes, dev);
+    if (res != CUDA_SUCCESS) {
+        LOG_ERROR("cuDeviceTotalMem_v2: Failed to get real memory (dev=%d, pid=%d)", dev, getpid());
+        return res;
+    }
+    size_t real_memory = *bytes;
+    
+    // Check if softmig is enabled and limits are configured
+    if (!is_softmig_enabled() || region_info.shared_region == NULL) {
+        // SoftMig not enabled or not initialized yet - return real memory
+        LOG_DEBUG("cuDeviceTotalMem_v2: SoftMig disabled or not initialized - returning real memory: %.2f GB (dev=%d, pid=%d)", 
+                 real_memory / (1024.0 * 1024.0 * 1024.0), dev, getpid());
+        return CUDA_SUCCESS;
+    }
+    
     // Convert CUDA device index to NVML device index for memory limit lookup
-    int nvml_dev = cuda_to_nvml_map(dev);
+    // Use identity mapping as fallback if mapping not initialized yet
+    int nvml_dev = (dev >= 0 && dev < CUDA_DEVICE_MAX_COUNT) ? cuda_to_nvml_map(dev) : dev;
+    if (nvml_dev < 0 || nvml_dev >= CUDA_DEVICE_MAX_COUNT) {
+        LOG_WARN("cuDeviceTotalMem_v2: Invalid NVML device index %d from CUDA device %d - using identity mapping (pid=%d)", 
+                 nvml_dev, dev, getpid());
+        nvml_dev = dev;
+    }
+    
     size_t limit = get_current_device_memory_limit(nvml_dev);
     
     if (limit == 0) {
         // No limit configured - return real physical memory
-        CUresult res = CUDA_OVERRIDE_CALL(cuda_library_entry, cuDeviceTotalMem_v2, bytes, dev);
-        LOG_INFO("cuDeviceTotalMem_v2: No limit - returning real physical memory: %.2f GB (dev=%d, nvml_dev=%d)", 
-                 *bytes / (1024.0 * 1024.0 * 1024.0), dev, nvml_dev);
-        return res;
+        LOG_INFO("cuDeviceTotalMem_v2: No limit - returning real physical memory: %.2f GB (dev=%d, nvml_dev=%d, pid=%d)", 
+                 real_memory / (1024.0 * 1024.0 * 1024.0), dev, nvml_dev, getpid());
+        return CUDA_SUCCESS;
     } else {
         // Return the imposed limit instead of physical memory
         // This "lies" to the application about total GPU memory to prevent over-allocation
         *bytes = limit;
-        LOG_INFO("cuDeviceTotalMem_v2: Returning limit instead of physical memory: %.2f GB (dev=%d, nvml_dev=%d) - application will see this as total GPU memory",
-                 *bytes / (1024.0 * 1024.0 * 1024.0), dev, nvml_dev);
+        LOG_INFO("cuDeviceTotalMem_v2: Returning limit instead of physical memory: %.2f GB (real=%.2f GB, dev=%d, nvml_dev=%d, pid=%d) - application will see this as total GPU memory",
+                 limit / (1024.0 * 1024.0 * 1024.0), real_memory / (1024.0 * 1024.0 * 1024.0), dev, nvml_dev, getpid());
         return CUDA_SUCCESS;
     }
 }

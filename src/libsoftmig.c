@@ -1012,6 +1012,15 @@ void preInit(){
         real_dlsym = get_real_dlsym_safe();
     }
     real_realpath = NULL;
+    
+    // Initialize device mapping array early with identity mapping (safe default)
+    // This ensures cuDeviceTotalMem_v2 and other early calls work correctly
+    extern int cuda_to_nvml_map_array[];
+    for (int i = 0; i < CUDA_DEVICE_MAX_COUNT; i++) {
+        cuda_to_nvml_map_array[i] = i;
+    }
+    LOG_DEBUG("preInit: Initialized device mapping array with identity mapping (pid=%d)", getpid());
+    
     load_cuda_libraries();
     //nvmlInit();
     ENSURE_INITIALIZED();
