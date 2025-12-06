@@ -108,14 +108,23 @@ int oom_check(const int dev, size_t addon) {
     }
 
     size_t new_allocated = _usage + addon;
-    // Log OOM check details with human-readable sizes
-    LOG_INFO("oom_check: pid=%d CUDA_dev=%d NVML_dev=%d usage=%.2f GB limit=%.2f GB addon=%.2f GB new_total=%.2f GB", 
-             getpid(), d, nvml_dev, 
-             _usage / (1024.0 * 1024.0 * 1024.0),
-             limit / (1024.0 * 1024.0 * 1024.0),
-             addon / (1024.0 * 1024.0 * 1024.0),
-             new_allocated / (1024.0 * 1024.0 * 1024.0));
-    LOG_INFO("oom_check: pid=%d CUDA_dev=%d NVML_dev=%d usage=%lu bytes limit=%lu bytes addon=%lu bytes new_total=%lu bytes", 
+    // Log OOM check details - only significant allocations (>1MB) at INFO, everything at DIAG
+    if (addon > 1024*1024) {
+        LOG_INFO("oom_check: pid=%d dev=%d usage=%.2f GB limit=%.2f GB addon=%.2f GB new_total=%.2f GB", 
+                 getpid(), d, 
+                 _usage / (1024.0 * 1024.0 * 1024.0),
+                 limit / (1024.0 * 1024.0 * 1024.0),
+                 addon / (1024.0 * 1024.0 * 1024.0),
+                 new_allocated / (1024.0 * 1024.0 * 1024.0));
+    } else {
+        LOG_DIAG("oom_check: pid=%d CUDA_dev=%d NVML_dev=%d usage=%.2f GB limit=%.2f GB addon=%.2f GB new_total=%.2f GB", 
+                 getpid(), d, nvml_dev, 
+                 _usage / (1024.0 * 1024.0 * 1024.0),
+                 limit / (1024.0 * 1024.0 * 1024.0),
+                 addon / (1024.0 * 1024.0 * 1024.0),
+                 new_allocated / (1024.0 * 1024.0 * 1024.0));
+    }
+    LOG_DIAG("oom_check: pid=%d CUDA_dev=%d NVML_dev=%d usage=%lu bytes limit=%lu bytes addon=%lu bytes new_total=%lu bytes", 
              getpid(), d, nvml_dev, _usage, limit, addon, new_allocated);
     LOG_DEBUG("oom_check: Current usage breakdown: _usage=%lu (from get_gpu_memory_usage), addon=%lu, limit=%lu", 
               _usage, addon, limit);

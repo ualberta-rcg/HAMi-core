@@ -371,7 +371,7 @@ size_t get_gpu_memory_monitor(const int dev) {
  * @return Total memory usage in bytes across all processes
  */
 size_t get_gpu_memory_usage(const int dev) {
-    LOG_INFO("get_gpu_memory_usage: START dev=%d pid=%d", dev, getpid());
+    LOG_DIAG("get_gpu_memory_usage: START dev=%d pid=%d", dev, getpid());
     ensure_initialized();
     if (!is_softmig_enabled() || region_info.shared_region == NULL) {
         LOG_WARN("get_gpu_memory_usage: softmig disabled or shared_region NULL (pid=%d)", getpid());
@@ -380,13 +380,13 @@ size_t get_gpu_memory_usage(const int dev) {
     int i=0;
     size_t total=0;
     lock_shrreg();
-    LOG_INFO("get_gpu_memory_usage: LOCKED - proc_num=%d (pid=%d, dev=%d)", 
+    LOG_DIAG("get_gpu_memory_usage: LOCKED - proc_num=%d (pid=%d, dev=%d)", 
              region_info.shared_region->proc_num, getpid(), dev);
     
-    // Log all processes in shared region for debugging
-    LOG_INFO("get_gpu_memory_usage: All processes in shared region (pid=%d, dev=%d):", getpid(), dev);
+    // Log all processes in shared region for diagnostic debugging (level 5 only)
+    LOG_DIAG("get_gpu_memory_usage: All processes in shared region (pid=%d, dev=%d):", getpid(), dev);
     for (i=0; i<region_info.shared_region->proc_num; i++) {
-        LOG_INFO("  Process[%d]: pid=%d, hostpid=%d, status=%d, dev[%d].total=%lu bytes (%.2f GB)", 
+        LOG_DIAG("  Process[%d]: pid=%d, hostpid=%d, status=%d, dev[%d].total=%lu bytes (%.2f GB)", 
                  i, 
                  region_info.shared_region->procs[i].pid,
                  region_info.shared_region->procs[i].hostpid,
@@ -398,7 +398,7 @@ size_t get_gpu_memory_usage(const int dev) {
     
     for (i=0;i<region_info.shared_region->proc_num;i++){
         size_t proc_usage = region_info.shared_region->procs[i].used[dev].total;
-        LOG_INFO("get_gpu_memory_usage: Adding process[%d] pid=%d usage=%lu bytes (%.2f GB) -> running_total=%lu bytes (%.2f GB)", 
+        LOG_DIAG("get_gpu_memory_usage: Adding process[%d] pid=%d usage=%lu bytes (%.2f GB) -> running_total=%lu bytes (%.2f GB)", 
                  i, region_info.shared_region->procs[i].pid, proc_usage,
                  proc_usage / (1024.0 * 1024.0 * 1024.0),
                  total, total / (1024.0 * 1024.0 * 1024.0));
@@ -407,7 +407,7 @@ size_t get_gpu_memory_usage(const int dev) {
     size_t total_before_offset = total;
     total+=initial_offset;
     unlock_shrreg();
-    LOG_INFO("get_gpu_memory_usage: FINAL total=%lu bytes (%.2f GB) = sum(%lu) + offset(%lu) (pid=%d, dev=%d, proc_num=%d)", 
+    LOG_DIAG("get_gpu_memory_usage: FINAL total=%lu bytes (%.2f GB) = sum(%lu) + offset(%lu) (pid=%d, dev=%d, proc_num=%d)", 
              total, total / (1024.0 * 1024.0 * 1024.0),
              total_before_offset, initial_offset, getpid(), dev, region_info.shared_region->proc_num);
     return total;
@@ -518,7 +518,7 @@ uint64_t nvml_get_device_memory_usage(const int dev) {
  * @return 0 on success, -1 if process not found in shared region
  */
 int add_gpu_device_memory_usage(int32_t pid,int cudadev,size_t usage,int type){
-    LOG_INFO("add_gpu_device_memory: pid=%d cuda_dev=%d->nvml_dev=%d usage=%lu type=%d", 
+    LOG_DIAG("add_gpu_device_memory: pid=%d cuda_dev=%d->nvml_dev=%d usage=%lu type=%d", 
              pid, cudadev, cuda_to_nvml_map(cudadev), usage, type);
     int dev = cuda_to_nvml_map(cudadev);
     ensure_initialized();
@@ -538,11 +538,20 @@ int add_gpu_device_memory_usage(int32_t pid,int cudadev,size_t usage,int type){
             found = 1;
             size_t old_total = region_info.shared_region->procs[i].used[dev].total;
             region_info.shared_region->procs[i].used[dev].total+=usage;
-            LOG_INFO("add_gpu_device_memory: Found pid=%d at slot %d, dev=%d: %.2f GB -> %.2f GB (%lu -> %lu bytes)", 
-                     pid, i, dev, 
-                     old_total / (1024.0 * 1024.0 * 1024.0),
-                     region_info.shared_region->procs[i].used[dev].total / (1024.0 * 1024.0 * 1024.0),
-                     old_total, region_info.shared_region->procs[i].used[dev].total);
+            // Only log significant allocations (>1MB) at INFO level, everything else at DIAG
+            if (usage > 1024*1024) {
+                LOG_INFO("add_gpu_device_memory: pid=%d dev=%d: %.2f GB -> %.2f GB (+%.2f GB)", 
+                         pid, dev, 
+                         old_total / (1024.0 * 1024.0 * 1024.0),
+                         region_info.shared_region->procs[i].used[dev].total / (1024.0 * 1024.0 * 1024.0),
+                         usage / (1024.0 * 1024.0 * 1024.0));
+            } else {
+                LOG_DIAG("add_gpu_device_memory: Found pid=%d at slot %d, dev=%d: %.2f GB -> %.2f GB (%lu -> %lu bytes)", 
+                         pid, i, dev, 
+                         old_total / (1024.0 * 1024.0 * 1024.0),
+                         region_info.shared_region->procs[i].used[dev].total / (1024.0 * 1024.0 * 1024.0),
+                         old_total, region_info.shared_region->procs[i].used[dev].total);
+            }
             switch (type) {
                 case 0:{
                     region_info.shared_region->procs[i].used[dev].context_size += usage;
@@ -556,23 +565,62 @@ int add_gpu_device_memory_usage(int32_t pid,int cudadev,size_t usage,int type){
                     region_info.shared_region->procs[i].used[dev].data_size += usage;
                 }
             }
-            LOG_INFO("add_gpu_device_memory: pid=%d dev=%d old_total=%lu added=%lu new_total=%lu", 
+            LOG_DIAG("add_gpu_device_memory: pid=%d dev=%d old_total=%lu added=%lu new_total=%lu", 
                      pid, dev, old_total, usage, region_info.shared_region->procs[i].used[dev].total);
             break;
         }
     }
     if (!found) {
-        LOG_ERROR("add_gpu_device_memory: PID %d not found in shared region! proc_num=%d (memory not tracked)", 
+        // Process not registered - this can happen if memory is allocated before
+        // init_proc_slot_withlock() is called, or due to a race condition.
+        // Auto-register the process to ensure memory is tracked.
+        LOG_WARN("add_gpu_device_memory: PID %d not found in shared region! Auto-registering (proc_num=%d)", 
                   pid, region_info.shared_region->proc_num);
-        LOG_ERROR("add_gpu_device_memory: Current processes in shared region:");
-        for (i=0; i<region_info.shared_region->proc_num; i++) {
-            LOG_ERROR("  Slot[%d]: pid=%d, hostpid=%d, dev[%d].total=%lu", 
-                      i, region_info.shared_region->procs[i].pid,
-                      region_info.shared_region->procs[i].hostpid, dev,
-                      region_info.shared_region->procs[i].used[dev].total);
+        
+        // Check if we have room for a new process
+        if (region_info.shared_region->proc_num >= SHARED_REGION_MAX_PROCESS_NUM) {
+            LOG_ERROR("add_gpu_device_memory: Cannot auto-register - shared region full! proc_num=%d >= max=%d (pid=%d)", 
+                      region_info.shared_region->proc_num, SHARED_REGION_MAX_PROCESS_NUM, pid);
+            unlock_shrreg();
+            return -1;  // Fail the allocation if we can't track it
         }
-        // Process not registered - this is a serious issue, but don't fail allocation
-        // The process should have been registered in init_proc_slot_withlock()
+        
+        // Auto-register the process
+        int slot = region_info.shared_region->proc_num;
+        region_info.shared_region->procs[slot].pid = pid;
+        region_info.shared_region->procs[slot].hostpid = 0;  // Will be set later by set_task_pid
+        region_info.shared_region->procs[slot].status = 1;
+        memset(region_info.shared_region->procs[slot].used, 0, sizeof(device_memory_t) * CUDA_DEVICE_MAX_COUNT);
+        memset(region_info.shared_region->procs[slot].device_util, 0, sizeof(device_util_t) * CUDA_DEVICE_MAX_COUNT);
+        region_info.shared_region->proc_num++;
+        
+        LOG_INFO("add_gpu_device_memory: Auto-registered pid=%d at slot %d (new proc_num=%d)", 
+                 pid, slot, region_info.shared_region->proc_num);
+        
+        // Now track the memory for the newly registered process
+        size_t old_total = 0;
+        region_info.shared_region->procs[slot].used[dev].total = usage;
+        if (usage > 1024*1024) {
+            LOG_INFO("add_gpu_device_memory: pid=%d dev=%d: 0.00 GB -> %.2f GB (+%.2f GB) [AUTO-REGISTERED]", 
+                     pid, dev, 
+                     usage / (1024.0 * 1024.0 * 1024.0),
+                     usage / (1024.0 * 1024.0 * 1024.0));
+        }
+        switch (type) {
+            case 0:{
+                region_info.shared_region->procs[slot].used[dev].context_size += usage;
+                break;
+            }
+            case 1:{
+                region_info.shared_region->procs[slot].used[dev].module_size += usage;
+                break;
+            }
+            case 2:{
+                region_info.shared_region->procs[slot].used[dev].data_size += usage;
+                break;
+            }
+        }
+        found = 1;  // Mark as found so we don't log the error again
     }
     unlock_shrreg();
     size_t total_usage = get_gpu_memory_usage(dev);
@@ -856,7 +904,7 @@ int clear_proc_slot_nolock(int do_clear) {
  */
 void init_proc_slot_withlock() {
     int32_t current_pid = getpid();
-    LOG_INFO("init_proc_slot_withlock: Registering process (pid=%d, current proc_num=%d)", 
+    LOG_DIAG("init_proc_slot_withlock: Registering process (pid=%d, current proc_num=%d)", 
              current_pid, region_info.shared_region ? region_info.shared_region->proc_num : -1);
     lock_shrreg();
     shared_region_t* region = region_info.shared_region;
@@ -872,7 +920,7 @@ void init_proc_slot_withlock() {
     int i,found=0;
     for (i=0; i<region->proc_num; i++) {
         if (region->procs[i].pid == current_pid) {
-            LOG_INFO("init_proc_slot_withlock: Found existing slot for pid=%d at index %d, resetting (pid=%d)", 
+            LOG_DIAG("init_proc_slot_withlock: Found existing slot for pid=%d at index %d, resetting (pid=%d)", 
                      current_pid, i, current_pid);
             region->procs[i].status = 1;
             memset(region->procs[i].used,0,sizeof(device_memory_t)*CUDA_DEVICE_MAX_COUNT);
@@ -882,31 +930,31 @@ void init_proc_slot_withlock() {
         }
     }
     if (!found) {
-        LOG_INFO("init_proc_slot_withlock: Creating new slot for pid=%d at index %d (pid=%d)", 
+        LOG_DIAG("init_proc_slot_withlock: Creating new slot for pid=%d at index %d (pid=%d)", 
                  current_pid, region->proc_num, current_pid);
         region->procs[region->proc_num].pid = current_pid;
         region->procs[region->proc_num].status = 1;
         memset(region->procs[region->proc_num].used,0,sizeof(device_memory_t)*CUDA_DEVICE_MAX_COUNT);
         memset(region->procs[region->proc_num].device_util,0,sizeof(device_util_t)*CUDA_DEVICE_MAX_COUNT);
         region->proc_num++;
-        LOG_INFO("init_proc_slot_withlock: Process registered successfully (pid=%d, new proc_num=%d)", 
+        LOG_INFO("init_proc_slot_withlock: Process registered (pid=%d, proc_num=%d)", 
                  current_pid, region->proc_num);
     }
 
     int cleared = clear_proc_slot_nolock(1);
     if (cleared > 0) {
-        LOG_INFO("init_proc_slot_withlock: Cleared %d dead process slot(s) (pid=%d)", cleared, current_pid);
+        LOG_DIAG("init_proc_slot_withlock: Cleared %d dead process slot(s) (pid=%d)", cleared, current_pid);
     }
     
-    // Log final state of all processes after registration
-    LOG_INFO("init_proc_slot_withlock: Final shared region state (pid=%d, proc_num=%d):", current_pid, region->proc_num);
+    // Log final state of all processes after registration (diagnostic level only)
+    LOG_DIAG("init_proc_slot_withlock: Final shared region state (pid=%d, proc_num=%d):", current_pid, region->proc_num);
     for (i=0; i<region->proc_num; i++) {
-        LOG_INFO("  Slot[%d]: pid=%d, hostpid=%d, status=%d", 
-                 i, region->procs[i].pid, region->procs[i].hostpid, region->procs[i].status);
+        LOG_DIAG("  Slot[%d]: pid=%d, hostpid=%d, status=%d, MemUsage[0]=%lu", 
+                 i, region->procs[i].pid, region->procs[i].hostpid, region->procs[i].status, region->procs[i].used[0].total);
     }
     
     unlock_shrreg();
-    LOG_INFO("init_proc_slot_withlock: Registration complete (pid=%d, final proc_num=%d)", 
+    LOG_DIAG("init_proc_slot_withlock: Registration complete (pid=%d, final proc_num=%d)", 
              current_pid, region->proc_num);
 }
 
@@ -1033,7 +1081,7 @@ void try_create_shrreg() {
             snprintf(cache_path, sizeof(cache_path), "%s/cudevshr.cache.uid%d.pid%d", tmpdir, uid, pid);
         }
         shr_reg_file = cache_path;
-        LOG_INFO("try_create_shrreg: Using shared memory file: %s (pid=%d, job_id=%s, tmpdir=%s)", 
+        LOG_DIAG("try_create_shrreg: Using shared memory file: %s (pid=%d, job_id=%s, tmpdir=%s)", 
                  shr_reg_file, getpid(), job_id ? job_id : "NULL", tmpdir ? tmpdir : "NULL");
     } else {
         LOG_INFO("try_create_shrreg: Using custom shared memory file from env: %s (pid=%d)", 
@@ -1102,7 +1150,7 @@ void try_create_shrreg() {
         region->initialized_flag = MULTIPROCESS_SHARED_REGION_MAGIC_FLAG;
         LOG_INFO("try_create_shrreg: Shared region initialized (pid=%d)", getpid());
     } else {
-        LOG_INFO("try_create_shrreg: Attaching to existing shared region (pid=%d, proc_num=%d, version=%d.%d)", 
+        LOG_DIAG("try_create_shrreg: Attaching to existing shared region (pid=%d, proc_num=%d, version=%d.%d)", 
                  getpid(), region->proc_num, region->major_version, region->minor_version);
         if (region->major_version != MAJOR_VERSION || 
                 region->minor_version != MINOR_VERSION) {

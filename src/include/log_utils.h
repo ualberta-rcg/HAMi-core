@@ -112,6 +112,22 @@ static inline char* get_log_file_path(void) {
 
 // All logs go to file only - never to stderr (Compute Canada/Digital Research Alliance optimized)
 // Logs are completely silent to users unless explicitly enabled via LIBCUDA_LOG_LEVEL
+// LOG_DIAG: Level 5 - Detailed diagnostic logging for memory oversubscription debugging
+#define LOG_DIAG(msg, ...) { \
+    char* log_level_str = getenv("LIBCUDA_LOG_LEVEL"); \
+    int log_level = log_level_str ? atoi(log_level_str) : 0; \
+    if (log_level >= 5) { \
+        if (fp1 == NULL) { \
+            char* log_path = get_log_file_path(); \
+            fp1 = fopen(log_path, "a"); \
+        } \
+        if (fp1 != NULL) { \
+            fprintf(fp1, "[softmig Diag(%d:%ld:%s:%d)]: "msg"\n", getpid(), pthread_self(), basename(__FILE__), __LINE__, ##__VA_ARGS__); \
+            fflush(fp1); \
+        } \
+    } \
+}
+
 #define LOG_DEBUG(msg, ...) { \
     char* log_level_str = getenv("LIBCUDA_LOG_LEVEL"); \
     int log_level = log_level_str ? atoi(log_level_str) : 0; \
