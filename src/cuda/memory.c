@@ -524,11 +524,12 @@ CUresult cuMemAdvise( CUdeviceptr devPtr, size_t count, CUmem_advise advice, CUd
 #undef cuMemGetInfo
 FUNC_ATTR_VISIBLE CUresult cuMemGetInfo(size_t* free, size_t* total) {
     CUdevice dev;
-    LOG_DEBUG("cuMemGetInfo");
+    LOG_INFO("cuMemGetInfo: CALLED (pid=%d)", getpid());
     ENSURE_INITIALIZED();
     CHECK_DRV_API(cuCtxGetDevice(&dev));
-    size_t usage = get_current_device_memory_usage(cuda_to_nvml_map(dev));
-    size_t limit = get_current_device_memory_limit(cuda_to_nvml_map(dev));
+    int nvml_dev = cuda_to_nvml_map(dev);
+    size_t usage = get_current_device_memory_usage(nvml_dev);
+    size_t limit = get_current_device_memory_limit(nvml_dev);
     
     // Check if real cuMemGetInfo exists, otherwise fall back to cuMemGetInfo_v2
     void* real_fn = CUDA_FIND_ENTRY(cuda_library_entry, cuMemGetInfo);
@@ -539,23 +540,29 @@ FUNC_ATTR_VISIBLE CUresult cuMemGetInfo(size_t* free, size_t* total) {
     
     if (limit == 0) {
         CUDA_OVERRIDE_CALL(cuda_library_entry,cuMemGetInfo, free, total);
-        LOG_INFO("orig free=%ld total=%ld", *free, *total);
+        LOG_INFO("cuMemGetInfo: No limit - orig free=%.2f GB total=%.2f GB usage=%.2f GB (pid=%d, dev=%d)", 
+                 *free / (1024.0*1024.0*1024.0), *total / (1024.0*1024.0*1024.0), 
+                 usage / (1024.0*1024.0*1024.0), getpid(), dev);
         *free = *total - usage;
-        LOG_INFO("after free=%ld total=%ld", *free, *total);
+        LOG_INFO("cuMemGetInfo: After adjustment - free=%.2f GB total=%.2f GB (pid=%d)", 
+                 *free / (1024.0*1024.0*1024.0), *total / (1024.0*1024.0*1024.0), getpid());
         return CUDA_SUCCESS;
     } else if (limit < usage) {
-        LOG_WARN("limit < usage; usage=%ld, limit=%ld", usage, limit);
+        LOG_WARN("cuMemGetInfo: limit < usage; usage=%.2f GB, limit=%.2f GB (pid=%d, dev=%d)", 
+                 usage / (1024.0*1024.0*1024.0), limit / (1024.0*1024.0*1024.0), getpid(), dev);
         return CUDA_ERROR_INVALID_VALUE;
     } else {
         CUDA_OVERRIDE_CALL(cuda_library_entry,cuMemGetInfo, free, total);
-        LOG_INFO("orig free=%ld total=%ld limit=%ld usage=%ld",
-            *free, *total, limit, usage);
+        LOG_INFO("cuMemGetInfo: orig free=%.2f GB total=%.2f GB limit=%.2f GB usage=%.2f GB (pid=%d, dev=%d, nvml_dev=%d)",
+            *free / (1024.0*1024.0*1024.0), *total / (1024.0*1024.0*1024.0), 
+            limit / (1024.0*1024.0*1024.0), usage / (1024.0*1024.0*1024.0), getpid(), dev, nvml_dev);
         // Ensure total memory does not exceed the physical or imposed limit.
         size_t actual_limit = (limit > *total) ? *total : limit;
         *free = (actual_limit > usage) ? (actual_limit - usage) : 0;
         *total = actual_limit;
-        LOG_INFO("after free=%ld total=%ld limit=%ld usage=%ld",
-            *free, *total, limit, usage);
+        LOG_INFO("cuMemGetInfo: RETURNING free=%.2f GB total=%.2f GB (limit=%.2f GB, usage=%.2f GB) (pid=%d) - gpu_burn will see this!",
+            *free / (1024.0*1024.0*1024.0), *total / (1024.0*1024.0*1024.0), 
+            limit / (1024.0*1024.0*1024.0), usage / (1024.0*1024.0*1024.0), getpid());
         return CUDA_SUCCESS;
     }
 }
@@ -563,30 +570,37 @@ FUNC_ATTR_VISIBLE CUresult cuMemGetInfo(size_t* free, size_t* total) {
 #undef cuMemGetInfo_v2
 FUNC_ATTR_VISIBLE CUresult cuMemGetInfo_v2(size_t* free, size_t* total) {
     CUdevice dev;
-    LOG_DEBUG("cuMemGetInfo_v2");
+    LOG_INFO("cuMemGetInfo_v2: CALLED (pid=%d)", getpid());
     ENSURE_INITIALIZED();
     CHECK_DRV_API(cuCtxGetDevice(&dev));
-    size_t usage = get_current_device_memory_usage(cuda_to_nvml_map(dev));
-    size_t limit = get_current_device_memory_limit(cuda_to_nvml_map(dev));
+    int nvml_dev = cuda_to_nvml_map(dev);
+    size_t usage = get_current_device_memory_usage(nvml_dev);
+    size_t limit = get_current_device_memory_limit(nvml_dev);
     if (limit == 0) {
         CUDA_OVERRIDE_CALL(cuda_library_entry,cuMemGetInfo_v2, free, total);
-        LOG_INFO("orig free=%ld total=%ld", *free, *total);
+        LOG_INFO("cuMemGetInfo_v2: No limit - orig free=%.2f GB total=%.2f GB usage=%.2f GB (pid=%d, dev=%d)", 
+                 *free / (1024.0*1024.0*1024.0), *total / (1024.0*1024.0*1024.0), 
+                 usage / (1024.0*1024.0*1024.0), getpid(), dev);
         *free = *total - usage;
-        LOG_INFO("after free=%ld total=%ld", *free, *total);
+        LOG_INFO("cuMemGetInfo_v2: After adjustment - free=%.2f GB total=%.2f GB (pid=%d)", 
+                 *free / (1024.0*1024.0*1024.0), *total / (1024.0*1024.0*1024.0), getpid());
         return CUDA_SUCCESS;
     } else if (limit < usage) {
-        LOG_WARN("limit < usage; usage=%ld, limit=%ld", usage, limit);
+        LOG_WARN("cuMemGetInfo_v2: limit < usage; usage=%.2f GB, limit=%.2f GB (pid=%d, dev=%d)", 
+                 usage / (1024.0*1024.0*1024.0), limit / (1024.0*1024.0*1024.0), getpid(), dev);
         return CUDA_ERROR_INVALID_VALUE;
     } else {
         CUDA_OVERRIDE_CALL(cuda_library_entry,cuMemGetInfo_v2, free, total);
-        LOG_INFO("orig free=%ld total=%ld limit=%ld usage=%ld",
-            *free, *total, limit, usage);
+        LOG_INFO("cuMemGetInfo_v2: orig free=%.2f GB total=%.2f GB limit=%.2f GB usage=%.2f GB (pid=%d, dev=%d, nvml_dev=%d)",
+            *free / (1024.0*1024.0*1024.0), *total / (1024.0*1024.0*1024.0), 
+            limit / (1024.0*1024.0*1024.0), usage / (1024.0*1024.0*1024.0), getpid(), dev, nvml_dev);
         // Ensure total memory does not exceed the physical or imposed limit.
         size_t actual_limit = (limit > *total) ? *total : limit;
         *free = (actual_limit > usage) ? (actual_limit - usage) : 0;
         *total = actual_limit;
-        LOG_INFO("after free=%ld total=%ld limit=%ld usage=%ld",
-            *free, *total, limit, usage);
+        LOG_INFO("cuMemGetInfo_v2: RETURNING free=%.2f GB total=%.2f GB (limit=%.2f GB, usage=%.2f GB) (pid=%d) - gpu_burn will see this!",
+            *free / (1024.0*1024.0*1024.0), *total / (1024.0*1024.0*1024.0), 
+            limit / (1024.0*1024.0*1024.0), usage / (1024.0*1024.0*1024.0), getpid());
         return CUDA_SUCCESS;
     }
 }

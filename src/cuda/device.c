@@ -80,12 +80,26 @@ CUresult cuDeviceGetLuid(char *luid, unsigned int *deviceNodeMask,
 }
 
 CUresult cuDeviceTotalMem_v2 ( size_t* bytes, CUdevice dev ) {
-    LOG_DEBUG("into cuDeviceTotalMem");
+    LOG_DEBUG("into cuDeviceTotalMem dev=%d", dev);
     ENSURE_INITIALIZED();
     // Convert CUDA device index to NVML device index for memory limit lookup
-    size_t limit = get_current_device_memory_limit(cuda_to_nvml_map(dev));
-    *bytes = limit;
-    return CUDA_SUCCESS;
+    int nvml_dev = cuda_to_nvml_map(dev);
+    size_t limit = get_current_device_memory_limit(nvml_dev);
+    
+    if (limit == 0) {
+        // No limit configured - return real physical memory
+        CUresult res = CUDA_OVERRIDE_CALL(cuda_library_entry, cuDeviceTotalMem_v2, bytes, dev);
+        LOG_INFO("cuDeviceTotalMem_v2: No limit - returning real physical memory: %.2f GB (dev=%d, nvml_dev=%d)", 
+                 *bytes / (1024.0 * 1024.0 * 1024.0), dev, nvml_dev);
+        return res;
+    } else {
+        // Return the imposed limit instead of physical memory
+        // This "lies" to the application about total GPU memory to prevent over-allocation
+        *bytes = limit;
+        LOG_INFO("cuDeviceTotalMem_v2: Returning limit instead of physical memory: %.2f GB (dev=%d, nvml_dev=%d) - application will see this as total GPU memory",
+                 *bytes / (1024.0 * 1024.0 * 1024.0), dev, nvml_dev);
+        return CUDA_SUCCESS;
+    }
 }
 
 CUresult cuDriverGetVersion(int *driverVersion) {
