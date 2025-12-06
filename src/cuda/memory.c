@@ -130,18 +130,35 @@ CUresult cuArrayDestroy(CUarray arr) {
 }
 
 CUresult cuMemoryAllocate(CUdeviceptr* dptr, size_t bytesize, void* data) {
+    // Log large allocations (>1MB) - this is used for allocations > 2MB (IPCSIZE)
+    if (bytesize > 1024*1024) {
+        LOG_INFO("cuMemoryAllocate: bytesize=%.2f GB (large allocation path)", bytesize / (1024.0 * 1024.0 * 1024.0));
+    } else {
+        LOG_DIAG("cuMemoryAllocate: bytesize=%lu", bytesize);
+    }
     CUresult res;
     res = CUDA_OVERRIDE_CALL(cuda_library_entry,cuMemAlloc_v2,dptr,bytesize);
+    if (res != CUDA_SUCCESS && bytesize > 1024*1024) {
+        LOG_ERROR("cuMemoryAllocate failed: res=%d bytesize=%.2f GB", res, bytesize / (1024.0 * 1024.0 * 1024.0));
+    }
     return res;
 }
 
 CUresult cuMemAlloc_v2(CUdeviceptr* dptr, size_t bytesize) {
-    LOG_INFO("into cuMemAllocing_v2 dptr=%p bytesize=%ld",dptr,bytesize);
+    // Only log large allocations (>1MB) at INFO, small ones at DIAG
+    if (bytesize > 1024*1024) {
+        LOG_INFO("cuMemAlloc_v2: bytesize=%.2f GB", bytesize / (1024.0 * 1024.0 * 1024.0));
+    } else {
+        LOG_DIAG("cuMemAlloc_v2: dptr=%p bytesize=%lu", dptr, bytesize);
+    }
     ENSURE_RUNNING();
     CUresult res = allocate_raw(dptr,bytesize);
     if (res!=CUDA_SUCCESS)
         return res;
-    LOG_INFO("res=%d, cuMemAlloc_v2 success dptr=%p bytesize=%lu",0,(void *)*dptr,bytesize);
+    // Only log success for large allocations
+    if (bytesize > 1024*1024) {
+        LOG_DIAG("cuMemAlloc_v2 success: dptr=%p bytesize=%.2f GB", (void *)*dptr, bytesize / (1024.0 * 1024.0 * 1024.0));
+    }
     return CUDA_SUCCESS;
 }
 
@@ -613,12 +630,22 @@ CUresult cuMemAddressReserve(CUdeviceptr* ptr, size_t size,
     size_t alignment, CUdeviceptr addr, unsigned long long flags ) {
     CUresult res = CUDA_OVERRIDE_CALL(cuda_library_entry,
         cuMemAddressReserve, ptr, size, alignment, addr, flags);
-    LOG_INFO("cuMemAddressReserve:%lx %llx", size, *ptr);
+    // Only log large reservations (>1MB) at INFO
+    if (size > 1024*1024) {
+        LOG_INFO("cuMemAddressReserve: size=%.2f GB ptr=%llx", size / (1024.0 * 1024.0 * 1024.0), *ptr);
+    } else {
+        LOG_DIAG("cuMemAddressReserve: size=%lu ptr=%llx", size, *ptr);
+    }
     return res;
 }
 
 CUresult cuMemCreate ( CUmemGenericAllocationHandle* handle, size_t size, const CUmemAllocationProp* prop, unsigned long long flags ) {
-    LOG_INFO("cuMemCreate:%lld:%d", size, prop->location.id);
+    // Only log large allocations (>1MB) at INFO
+    if (size > 1024*1024) {
+        LOG_INFO("cuMemCreate: size=%.2f GB dev=%d", size / (1024.0 * 1024.0 * 1024.0), prop->location.id);
+    } else {
+        LOG_DIAG("cuMemCreate: size=%lu dev=%d", size, prop->location.id);
+    }
     ENSURE_RUNNING();
     CUdevice dev;
     CUDA_OVERRIDE_CALL(cuda_library_entry, cuCtxGetDevice, &dev);
@@ -634,7 +661,7 @@ CUresult cuMemCreate ( CUmemGenericAllocationHandle* handle, size_t size, const 
 }
 
 CUresult cuMemRelease(CUmemGenericAllocationHandle handle) {
-    LOG_INFO("cuMemRelease:%llx", handle);
+    LOG_DIAG("cuMemRelease: handle=%llx", handle);
     CUresult res = CUDA_OVERRIDE_CALL(cuda_library_entry, cuMemRelease, handle);
     if (res == CUDA_SUCCESS) {
         remove_chunk_only(handle);
@@ -643,7 +670,12 @@ CUresult cuMemRelease(CUmemGenericAllocationHandle handle) {
 }
 
 CUresult cuMemMap( CUdeviceptr ptr, size_t size, size_t offset, CUmemGenericAllocationHandle handle, unsigned long long flags ) {
-    LOG_INFO("cuMemMap:%lld(%llx,%llx)", size, ptr, offset);
+    // Only log large mappings (>1MB) at INFO
+    if (size > 1024*1024) {
+        LOG_INFO("cuMemMap: size=%.2f GB ptr=%llx", size / (1024.0 * 1024.0 * 1024.0), ptr);
+    } else {
+        LOG_DIAG("cuMemMap: size=%lu ptr=%llx offset=%llx", size, ptr, offset);
+    }
     CUresult res = CUDA_OVERRIDE_CALL(cuda_library_entry,cuMemMap,ptr,size,offset,handle,flags);
     return res;
 }
@@ -657,7 +689,12 @@ CUresult cuMemImportFromShareableHandle(CUmemGenericAllocationHandle* handle,
 }
 
 CUresult cuMemAllocAsync(CUdeviceptr *dptr, size_t bytesize, CUstream hStream) {
-    LOG_DEBUG("cuMemAllocAsync:%ld",bytesize);
+    // Only log large allocations (>1MB) at INFO
+    if (bytesize > 1024*1024) {
+        LOG_INFO("cuMemAllocAsync: bytesize=%.2f GB", bytesize / (1024.0 * 1024.0 * 1024.0));
+    } else {
+        LOG_DIAG("cuMemAllocAsync: bytesize=%lu stream=%p", bytesize, hStream);
+    }
     return allocate_async_raw(dptr,bytesize,hStream);
 }
 
@@ -719,7 +756,9 @@ CUresult cuMemPoolDestroy(CUmemoryPool pool) {
 }
 
 CUresult cuMemAllocFromPoolAsync(CUdeviceptr *dptr, size_t bytesize, CUmemoryPool pool, CUstream hStream) {
-    LOG_DEBUG("cuMemAllocFromPoolAsync");
+    LOG_WARN("cuMemAllocFromPoolAsync: bytesize=%lu (%.2f GB) - NOT TRACKED! This allocation bypasses memory limits!", 
+             bytesize, bytesize / (1024.0 * 1024.0 * 1024.0));
+    // TODO: This should be tracked but currently just passes through
     return CUDA_OVERRIDE_CALL(cuda_library_entry,cuMemAllocFromPoolAsync,dptr,bytesize,pool,hStream);
 }
 

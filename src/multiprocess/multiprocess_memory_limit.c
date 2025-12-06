@@ -407,9 +407,16 @@ size_t get_gpu_memory_usage(const int dev) {
     size_t total_before_offset = total;
     total+=initial_offset;
     unlock_shrreg();
-    LOG_DIAG("get_gpu_memory_usage: FINAL total=%lu bytes (%.2f GB) = sum(%lu) + offset(%lu) (pid=%d, dev=%d, proc_num=%d)", 
-             total, total / (1024.0 * 1024.0 * 1024.0),
-             total_before_offset, initial_offset, getpid(), dev, region_info.shared_region->proc_num);
+    // Log FINAL total at INFO if significant (>1MB), otherwise DIAG
+    // This is critical for debugging memory aggregation across processes
+    if (total > 1024*1024) {
+        LOG_INFO("get_gpu_memory_usage: FINAL total=%.2f GB (pid=%d, dev=%d, proc_num=%d)", 
+                 total / (1024.0 * 1024.0 * 1024.0), getpid(), dev, region_info.shared_region->proc_num);
+    } else {
+        LOG_DIAG("get_gpu_memory_usage: FINAL total=%lu bytes (%.2f GB) = sum(%lu) + offset(%lu) (pid=%d, dev=%d, proc_num=%d)", 
+                 total, total / (1024.0 * 1024.0 * 1024.0),
+                 total_before_offset, initial_offset, getpid(), dev, region_info.shared_region->proc_num);
+    }
     return total;
 }
 
@@ -623,16 +630,19 @@ int add_gpu_device_memory_usage(int32_t pid,int cudadev,size_t usage,int type){
         found = 1;  // Mark as found so we don't log the error again
     }
     unlock_shrreg();
-    size_t total_usage = get_gpu_memory_usage(dev);
-    size_t limit = get_current_device_memory_limit(dev);
-    LOG_INFO("gpu_device_memory_added: pid=%d dev=%d added=%.2f GB (%.2f%%) total_across_all_procs=%.2f GB limit=%.2f GB", 
-             pid, dev, 
-             usage / (1024.0 * 1024.0 * 1024.0),
-             (limit > 0) ? (100.0 * usage / limit) : 0.0,
-             total_usage / (1024.0 * 1024.0 * 1024.0),
-             limit / (1024.0 * 1024.0 * 1024.0));
-    LOG_INFO("gpu_device_memory_added: pid=%d dev=%d added=%lu bytes total_across_all_procs=%lu bytes limit=%lu bytes", 
-             pid, dev, usage, total_usage, limit);
+    // Only log summary for significant allocations (>1MB), and only once (not both GB and bytes)
+    if (usage > 1024*1024) {
+        size_t total_usage = get_gpu_memory_usage(dev);
+        size_t limit = get_current_device_memory_limit(dev);
+        LOG_INFO("gpu_device_memory_added: pid=%d dev=%d added=%.2f GB (%.1f%%) total=%.2f GB limit=%.2f GB", 
+                 pid, dev, 
+                 usage / (1024.0 * 1024.0 * 1024.0),
+                 (limit > 0) ? (100.0 * usage / limit) : 0.0,
+                 total_usage / (1024.0 * 1024.0 * 1024.0),
+                 limit / (1024.0 * 1024.0 * 1024.0));
+    } else {
+        LOG_DIAG("gpu_device_memory_added: pid=%d dev=%d added=%lu bytes", pid, dev, usage);
+    }
     return 0;
 }
 
