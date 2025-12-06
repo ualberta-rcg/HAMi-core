@@ -61,21 +61,9 @@ int oom_check(const int dev, size_t addon) {
     }
 
     size_t new_allocated = _usage + addon;
-    // Log detailed info about all processes in shared region for debugging
-    if (region_info.shared_region != NULL) {
-        lock_shrreg();
-        LOG_INFO("oom_check: pid=%d CUDA_dev=%d NVML_dev=%d usage=%lu limit=%lu addon=%lu new_total=%lu proc_num=%d", 
-                 getpid(), d, nvml_dev, _usage, limit, addon, new_allocated, region_info.shared_region->proc_num);
-        for (int i = 0; i < region_info.shared_region->proc_num; i++) {
-            LOG_INFO("  Process[%d]: pid=%d dev[%d].total=%lu", i, 
-                     region_info.shared_region->procs[i].pid, nvml_dev,
-                     region_info.shared_region->procs[i].used[nvml_dev].total);
-        }
-        unlock_shrreg();
-    } else {
-        LOG_INFO("oom_check: pid=%d CUDA_dev=%d NVML_dev=%d usage=%lu limit=%lu addon=%lu new_total=%lu (shared_region NULL)", 
-                 getpid(), d, nvml_dev, _usage, limit, addon, new_allocated);
-    }
+    // Log OOM check details
+    LOG_INFO("oom_check: pid=%d CUDA_dev=%d NVML_dev=%d usage=%lu limit=%lu addon=%lu new_total=%lu", 
+             getpid(), d, nvml_dev, _usage, limit, addon, new_allocated);
     if (new_allocated > limit) {
         LOG_ERROR("Device %d (NVML %d) OOM %lu / %lu (pid=%d)", d, nvml_dev, new_allocated, limit, getpid());
 

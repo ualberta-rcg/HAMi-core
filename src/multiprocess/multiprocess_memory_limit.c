@@ -69,6 +69,11 @@ int _record_kernel_interval = 1;
 void do_init_device_memory_limits(uint64_t*, int);
 void exit_withlock(int exitcode);
 
+// External function from config_file.c - reads from config file or env
+extern size_t get_limit_from_config_or_env(const char* env_name);
+// Forward declaration - defined in config_file.c
+int is_softmig_configured(void);
+
 void set_current_gpu_status(int status){
     if (!is_softmig_enabled() || region_info.shared_region == NULL) {
         return;  // No-op when softmig is disabled
@@ -88,11 +93,6 @@ void sig_restore_stub(int signo){
 void sig_swap_stub(int signo){
     set_current_gpu_status(2);
 }
-
-
-// External function from config_file.c - reads from config file or env
-extern size_t get_limit_from_config_or_env(const char* env_name);
-extern int is_softmig_configured(void);
 
 // get device memory from config file (priority) or env (fallback)
 // This is now a wrapper that calls the config file reader
