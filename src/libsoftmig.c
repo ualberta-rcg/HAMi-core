@@ -1,3 +1,16 @@
+/**
+ * @file libsoftmig.c
+ * @brief Main library entry point for SoftMig - CUDA and NVML API hooking
+ * 
+ * SoftMig is a HAMi-core fork with extensive modifications for SLURM integration
+ * on Alliance clusters. This file implements the dlsym hooking mechanism that
+ * intercepts CUDA and NVML API calls to enforce GPU memory and compute limits.
+ * 
+ * @authors Rahim Khoja, Karim Ali
+ * @organization Research Computing, University of Alberta
+ * @note This is a HAMi-core fork with SLURM-specific changes for Alliance clusters
+ */
+
 //#include "memory_limit.h"
 #include <fcntl.h>
 #include <dlfcn.h>
@@ -49,6 +62,12 @@ typedef struct {
 tid_dl_map dlmap[DLMAP_SIZE];
 int dlmap_count=0;
 
+/**
+ * @brief Initialize the dlsym hooking system
+ * 
+ * Sets up the mutex for thread-safe dlsym operations and clears the thread-local
+ * dlsym map to prevent recursive symbol lookups. Called once via pthread_once.
+ */
 void init_dlsym(){
     LOG_DEBUG("init_dlsym\n");
     pthread_mutex_init(&dlsym_lock,NULL);
@@ -56,6 +75,16 @@ void init_dlsym(){
     memset(dlmap, 0, sizeof(tid_dl_map)*DLMAP_SIZE);
 }
 
+/**
+ * @brief Check if a dlsym call is recursive for the current thread
+ * 
+ * Prevents infinite recursion when dlsym is called from within our hook.
+ * Maintains a circular buffer of recent dlsym calls per thread.
+ * 
+ * @param tid Thread ID to check
+ * @param pointer Symbol pointer being looked up
+ * @return 1 if recursive call detected, 0 otherwise
+ */
 int check_dlmap(pthread_t tid, void *pointer){
     int i;
     int cursor = (dlmap_count < DLMAP_SIZE) ? dlmap_count : DLMAP_SIZE;
@@ -70,7 +99,15 @@ int check_dlmap(pthread_t tid, void *pointer){
     return 0;
 }
 
-// Helper to get real dlsym without recursion
+/**
+ * @brief Get the real dlsym function pointer without triggering recursion
+ * 
+ * Attempts multiple methods to find the real dlsym symbol from libc/libdl,
+ * avoiding our own hook. This is critical for the hooking mechanism to work.
+ * Tries dlvsym with various GLIBC versions and fallback methods.
+ * 
+ * @return Function pointer to real dlsym, or NULL if all methods fail
+ */
 static fp_dlsym get_real_dlsym_safe(void) {
     fp_dlsym result = NULL;
     
@@ -120,6 +157,23 @@ static fp_dlsym get_real_dlsym_safe(void) {
     return result;
 }
 
+/**
+ * @brief Hooked dlsym function - intercepts symbol lookups for CUDA/NVML APIs
+ * 
+ * This is the main entry point for API interception. When an application calls
+ * dlsym to look up CUDA or NVML functions, this hook intercepts the call and
+ * returns our wrapped versions instead. This allows us to:
+ * - Enforce GPU memory limits across all processes in a SLURM job
+ * - Limit SM (Streaming Multiprocessor) utilization via kernel throttling
+ * - Track memory usage in shared memory for multi-process coordination
+ * 
+ * SLURM-specific: Uses SLURM_JOB_ID to coordinate shared memory regions
+ * across all processes in the same job.
+ * 
+ * @param handle Library handle (RTLD_NEXT, RTLD_DEFAULT, etc.)
+ * @param symbol Symbol name to look up
+ * @return Function pointer to hooked or original function
+ */
 FUNC_ATTR_VISIBLE void* dlsym(void* handle, const char* symbol) {
     LOG_DEBUG("into dlsym %s",symbol);
     pthread_once(&dlsym_init_flag,init_dlsym);
@@ -201,6 +255,17 @@ FUNC_ATTR_VISIBLE void* dlsym(void* handle, const char* symbol) {
     return real_dlsym(handle, symbol);
 }
 
+/**
+ * @brief Find and return hooked CUDA function if available
+ * 
+ * Searches through the CUDA function entry table to find if we have a hook
+ * for the requested symbol. If found, returns our wrapped version; otherwise
+ * returns NULL to fall back to the real library function.
+ * 
+ * @param handle Library handle
+ * @param symbol Symbol name to look up
+ * @return Hooked function pointer if available, NULL otherwise
+ */
 void* __dlsym_hook_section(void* handle, const char* symbol) {
     int it;
     for (it=0;it<CUDA_ENTRY_END;it++){
@@ -428,6 +493,17 @@ void* __dlsym_hook_section(void* handle, const char* symbol) {
     return NULL;
 }
 
+/**
+ * @brief Find and return hooked NVML function if available
+ * 
+ * Similar to __dlsym_hook_section but for NVML (NVIDIA Management Library)
+ * functions. Used primarily for memory information queries that need to be
+ * intercepted to show virtualized memory limits.
+ * 
+ * @param handle Library handle
+ * @param symbol Symbol name to look up
+ * @return Hooked function pointer if available, NULL otherwise
+ */
 void* __dlsym_hook_section_nvml(void* handle, const char* symbol) {
     DLSYM_HOOK_FUNC(nvmlInit);
     /** nvmlShutdown */
@@ -919,6 +995,13 @@ void* __dlsym_hook_section_nvml(void* handle, const char* symbol) {
     return NULL;
 }
 
+/**
+ * @brief Pre-initialization hook called before CUDA initialization
+ * 
+ * Sets up the dlsym hooking mechanism and loads CUDA libraries.
+ * Called once via pthread_once before the first CUDA API call.
+ * Ensures the shared memory region is initialized for multi-process coordination.
+ */
 void preInit(){
     LOG_MSG("Initializing.....");
     if (real_dlsym == NULL) {
@@ -930,6 +1013,19 @@ void preInit(){
     ENSURE_INITIALIZED();
 }
 
+/**
+ * @brief Post-initialization hook called after CUDA initialization
+ * 
+ * Completes the setup after cuInit() succeeds:
+ * - Initializes the memory allocator
+ * - Maps CUDA_VISIBLE_DEVICES to NVML device indices (SLURM-specific)
+ * - Registers the process in the shared memory region
+ * - Sets up host PID tracking for utilization monitoring
+ * - Initializes the SM utilization watcher thread
+ * 
+ * SLURM-specific: Uses SLURM_JOB_ID to coordinate with other processes
+ * in the same job via shared memory.
+ */
 void postInit(){
     allocator_init();
     map_cuda_visible_devices();
@@ -949,6 +1045,18 @@ void postInit(){
     init_utilization_watcher();
 }
 
+/**
+ * @brief Hooked cuInit - entry point for CUDA initialization
+ * 
+ * Intercepts CUDA initialization to set up SoftMig before the application
+ * starts using CUDA. Ensures:
+ * - Pre-initialization runs once (dlsym setup, library loading)
+ * - CUDA is initialized via the real library
+ * - Post-initialization runs once (allocator, shared memory, process registration)
+ * 
+ * @param Flags CUDA initialization flags
+ * @return CUDA_SUCCESS on success, error code otherwise
+ */
 CUresult cuInit(unsigned int Flags){
     LOG_INFO("Into cuInit");
     pthread_once(&pre_cuinit_flag,(void(*)(void))preInit);

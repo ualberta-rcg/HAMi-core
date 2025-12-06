@@ -11,9 +11,34 @@
 #include "include/libcuda_hook.h"
 #include "multiprocess/multiprocess_memory_limit.h"
 
+/**
+ * @file utils.c
+ * @brief Utility functions for SoftMig
+ * 
+ * Contains helper functions for:
+ * - Lock file management (SLURM-aware)
+ * - CUDA device to NVML device index mapping
+ * - Process PID tracking for utilization monitoring
+ * 
+ * SLURM-specific: Uses SLURM_TMPDIR and SLURM_JOB_ID for job-specific
+ * lock files and device mapping.
+ * 
+ * @authors Rahim Khoja, Karim Ali
+ * @organization Research Computing, University of Alberta
+ * @note This is a HAMi-core fork with SLURM-specific changes for Alliance clusters
+ */
+
 // Note: fp1 is now defined in log_file.c to avoid linking issues with standalone tools
 
-// Helper to get lock file path (Compute Canada optimized - uses SLURM_TMPDIR)
+/**
+ * @brief Get path for unified lock file (SLURM-aware)
+ * 
+ * Creates a job-specific lock file path using SLURM_TMPDIR and SLURM_JOB_ID.
+ * This ensures lock files are per-job and automatically cleaned up when the
+ * job finishes.
+ * 
+ * @return Path to lock file (static buffer)
+ */
 static char* get_unified_lock_path(void) {
     static char lock_path[512] = {0};
     static int initialized = 0;
@@ -105,8 +130,13 @@ int try_lock_unified_lock() {
     return -1;
 }
 
-// 0 unified_lock unlock success
-// -1 unified_lock unlock fail
+/**
+ * @brief Release the unified lock file
+ * 
+ * Removes the lock file to release the lock.
+ * 
+ * @return 0 on success, -1 on failure
+ */
 int try_unlock_unified_lock() {
     int res = remove(unified_lock);
     LOG_INFO("try unlock_unified_lock:%d",res);
@@ -159,6 +189,15 @@ int getextrapid(unsigned int prev, unsigned int current, nvmlProcessInfo_t1 *pre
     return 0;
 }
 
+/**
+ * @brief Detect and register the host PID for utilization monitoring
+ * 
+ * Uses NVML to detect which process on the GPU corresponds to this process.
+ * The "host PID" is the PID as seen by NVML (may differ in containers).
+ * This is used for SM utilization tracking and monitoring.
+ * 
+ * @return NVML_SUCCESS on success, error code otherwise
+ */
 nvmlReturn_t set_task_pid() {
     unsigned int running_processes=0,previous=0,merged_num=0;
     nvmlProcessInfo_v1_t tmp_pids_on_device[SHARED_REGION_MAX_PROCESS_NUM];
@@ -219,11 +258,31 @@ nvmlReturn_t set_task_pid() {
     }
     unsigned int hostpid = getextrapid(previous,running_processes,pre_pids_on_device,pids_on_device); 
     if (hostpid==0) {
-        LOG_ERROR("host pid is error!");
-        return NVML_ERROR_DRIVER_NOT_LOADED;
+        // Fallback: try to find our own PID in the NVML process list
+        // This happens when multiple processes start simultaneously and both
+        // are already in the list when we check
+        pid_t current_pid = getpid();
+        LOG_WARN("getextrapid returned 0 (multiple processes started simultaneously?), trying fallback with current PID %d", current_pid);
+        
+        // Search for our PID in the current process list
+        int found_our_pid = 0;
+        for (i=0; i<running_processes; i++) {
+            if (pids_on_device[i].pid == current_pid) {
+                hostpid = current_pid;
+                found_our_pid = 1;
+                LOG_INFO("Found current PID %d in NVML process list, using as hostpid", current_pid);
+                break;
+            }
+        }
+        
+        if (!found_our_pid) {
+            // Last resort: use current PID anyway (may not match NVML's view in containers)
+            hostpid = current_pid;
+            LOG_WARN("Current PID %d not found in NVML process list, using anyway (may not work in containers)", current_pid);
+        }
     }
     
-    LOG_INFO("hostPid=%d",hostpid);
+    LOG_INFO("hostPid=%d (current pid=%d)", hostpid, getpid());
     if (set_host_pid(hostpid)==0) {
         for (i=0;i<running_processes;i++) {
             if (pids_on_device[i].pid==hostpid) {
@@ -260,6 +319,19 @@ int parse_cuda_visible_env() {
     return count;
 }
 
+/**
+ * @brief Map CUDA device indices to NVML device indices
+ * 
+ * Initializes the cuda_to_nvml_map_array based on CUDA_VISIBLE_DEVICES.
+ * This is critical because CUDA and NVML use different device indexing
+ * when CUDA_VISIBLE_DEVICES is set. Memory tracking uses NVML indices,
+ * so we need to convert CUDA indices to NVML indices.
+ * 
+ * SLURM-specific: SLURM sets CUDA_VISIBLE_DEVICES to limit which GPUs
+ * a job can see, requiring this mapping.
+ * 
+ * @return 0 on success
+ */
 int map_cuda_visible_devices() {
     parse_cuda_visible_env();
     return 0;

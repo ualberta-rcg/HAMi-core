@@ -1,9 +1,27 @@
+/**
+ * @file allocator.c
+ * @brief GPU memory allocator with OOM (Out-Of-Memory) checking
+ * 
+ * Implements the memory allocation tracking and OOM prevention system.
+ * All CUDA memory allocations go through this module, which:
+ * - Checks if allocation would exceed the configured memory limit
+ * - Tracks allocations in shared memory for multi-process coordination
+ * - Maintains lists of allocated chunks for proper cleanup
+ * 
+ * SLURM-specific: Memory limits are enforced across all processes in a job
+ * via shared memory coordination.
+ * 
+ * @authors Rahim Khoja, Karim Ali
+ * @organization Research Computing, University of Alberta
+ * @note This is a HAMi-core fork with SLURM-specific changes for Alliance clusters
+ */
+
 #include "allocator.h"
 #include "include/log_utils.h"
 #include "include/libcuda_hook.h"
 #include "multiprocess/multiprocess_memory_limit.h"
 
-
+// Allocation size constants
 size_t BITSIZE = 512;
 size_t IPCSIZE = 2097152;
 size_t OVERSIZE = 134217728;
@@ -27,12 +45,41 @@ extern CUresult cuMemoryFree(CUdeviceptr dptr);
 pthread_once_t allocator_allocate_flag = PTHREAD_ONCE_INIT;
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 
+/**
+ * @brief Round up a size to the nearest multiple of unit
+ * 
+ * Used for memory alignment. If size is not already a multiple of unit,
+ * rounds up to the next multiple.
+ * 
+ * @param size Size to round up
+ * @param unit Alignment unit (must be power of 2)
+ * @return Rounded up size
+ */
 size_t round_up(size_t size, size_t unit) {
     if (size & (unit-1))
         return ((size / unit) + 1 ) * unit;
     return size;
 }
 
+/**
+ * @brief Check if allocating additional memory would exceed the limit
+ * 
+ * Performs out-of-memory (OOM) check before allocation. This is the core
+ * enforcement mechanism that prevents processes from exceeding their GPU
+ * memory slice. The check:
+ * - Gets current total memory usage across ALL processes in the job (via shared memory)
+ * - Adds the requested allocation size
+ * - Compares against the configured limit
+ * - Returns 1 if limit would be exceeded, 0 otherwise
+ * 
+ * SLURM-specific: Aggregates memory usage across all processes in the same
+ * SLURM job via the shared memory region, ensuring the total doesn't exceed
+ * the job's allocated slice.
+ * 
+ * @param dev CUDA device index (-1 to use current context device)
+ * @param addon Size of memory to allocate (in bytes)
+ * @return 1 if allocation would exceed limit, 0 if OK
+ */
 int oom_check(const int dev, size_t addon) {
     // Ensure shared memory region is initialized before checking OOM
     ensure_initialized();
@@ -74,6 +121,14 @@ int oom_check(const int dev, size_t addon) {
     return 0;
 }
 
+/**
+ * @brief Debug function to view current allocator state
+ * 
+ * Logs information about overallocated memory chunks and current device
+ * memory usage. Useful for debugging memory limit issues.
+ * 
+ * @return CUDA_SUCCESS
+ */
 CUresult view_vgpu_allocator() {
     allocated_list_entry *al;
     size_t total;
@@ -89,6 +144,16 @@ CUresult view_vgpu_allocator() {
     return 0;
 }
 
+/**
+ * @brief Calculate total size of all chunks in an allocation list
+ * 
+ * Iterates through the linked list of allocated chunks and sums their sizes.
+ * Used for tracking total allocated memory.
+ * 
+ * @param al Allocation list to measure
+ * @param size Output parameter for total size
+ * @return CUDA_SUCCESS
+ */
 CUresult get_listsize(allocated_list *al, size_t *size) {
     if (al->length == 0){
         *size = 0;
@@ -103,6 +168,16 @@ CUresult get_listsize(allocated_list *al, size_t *size) {
     return CUDA_SUCCESS;
 }
 
+/**
+ * @brief Initialize the memory allocator
+ * 
+ * Sets up the data structures for tracking GPU memory allocations:
+ * - device_overallocated: List of chunks allocated via cuMemAlloc (synchronous)
+ * - device_allocasync: List of chunks allocated via cuMemAllocAsync (asynchronous)
+ * - Initializes the mutex for thread-safe operations
+ * 
+ * Called once during postInit() after CUDA initialization.
+ */
 void allocator_init() {
     LOG_DEBUG("Allocator_init\n");
     
@@ -114,6 +189,20 @@ void allocator_init() {
     pthread_mutex_init(&mutex,NULL);
 }
 
+/**
+ * @brief Allocate a new GPU memory chunk and add it to tracking
+ * 
+ * Performs OOM check, allocates memory via CUDA, and tracks it in the
+ * overallocated list. For small allocations (<= IPCSIZE), uses standard
+ * cuMemAlloc. For larger allocations, uses custom allocation logic.
+ * 
+ * SLURM-specific: Updates shared memory with the new allocation so other
+ * processes in the job can see the total memory usage.
+ * 
+ * @param address Output parameter for allocated device pointer
+ * @param size Size to allocate in bytes
+ * @return 0 on success, CUDA_ERROR_OUT_OF_MEMORY if limit exceeded
+ */
 int add_chunk(CUdeviceptr *address, size_t size) {
     size_t addr=0;
     size_t allocsize;
@@ -144,6 +233,17 @@ int add_chunk(CUdeviceptr *address, size_t size) {
     return 0;
 }
 
+/**
+ * @brief Add an already-allocated chunk to tracking (no actual allocation)
+ * 
+ * Used when memory is allocated outside our allocator but we still need
+ * to track it for OOM checking. Just adds the chunk to the tracking list
+ * and updates shared memory usage.
+ * 
+ * @param address Device pointer of already-allocated memory
+ * @param size Size of the allocation
+ * @return 0 on success, -1 on failure
+ */
 int add_chunk_only(CUdeviceptr address, size_t size) {
     pthread_mutex_lock(&mutex);
     size_t addr=0;
@@ -166,6 +266,15 @@ int add_chunk_only(CUdeviceptr address, size_t size) {
     return 0;
 }
 
+/**
+ * @brief Check if an address belongs to tracked device memory
+ * 
+ * Searches through the overallocated list to see if the address falls
+ * within any tracked allocation. Used to distinguish device vs host memory.
+ * 
+ * @param address Memory address to check
+ * @return CU_MEMORYTYPE_DEVICE if found in tracked allocations, CU_MEMORYTYPE_HOST otherwise
+ */
 int check_memory_type(CUdeviceptr address) {
     allocated_list_entry *cursor;
     cursor = device_overallocated->head;
@@ -176,6 +285,16 @@ int check_memory_type(CUdeviceptr address) {
     return CU_MEMORYTYPE_HOST;
 }
 
+/**
+ * @brief Remove a chunk from tracking and free the memory
+ * 
+ * Finds the chunk in the list, frees it via CUDA, removes it from tracking,
+ * and updates shared memory to reflect the freed memory.
+ * 
+ * @param a_list Allocation list to remove from
+ * @param dptr Device pointer to free
+ * @return 0 on success, -1 if chunk not found
+ */
 int remove_chunk(allocated_list *a_list, CUdeviceptr dptr) {
     size_t t_size;
     if (a_list->length==0) {
@@ -196,6 +315,15 @@ int remove_chunk(allocated_list *a_list, CUdeviceptr dptr) {
     return -1;
 }
 
+/**
+ * @brief Remove a chunk from tracking without freeing memory
+ * 
+ * Used when memory is freed outside our allocator but we need to stop
+ * tracking it. Removes from list and updates shared memory usage.
+ * 
+ * @param dptr Device pointer to remove from tracking
+ * @return 0 on success, -1 if chunk not found
+ */
 int remove_chunk_only(CUdeviceptr dptr) {
     allocated_list *a_list = device_overallocated;
     size_t t_size;
@@ -216,6 +344,16 @@ int remove_chunk_only(CUdeviceptr dptr) {
     return -1;
 }
 
+/**
+ * @brief Thread-safe wrapper for add_chunk
+ * 
+ * Locks the allocator mutex, calls add_chunk, then unlocks.
+ * Used by CUDA memory allocation hooks.
+ * 
+ * @param dptr Output parameter for allocated device pointer
+ * @param size Size to allocate
+ * @return 0 on success, error code on failure
+ */
 int allocate_raw(CUdeviceptr *dptr, size_t size) {
     int tmp;
     pthread_mutex_lock(&mutex);
@@ -224,6 +362,15 @@ int allocate_raw(CUdeviceptr *dptr, size_t size) {
     return tmp;
 }
 
+/**
+ * @brief Thread-safe wrapper for remove_chunk
+ * 
+ * Locks the allocator mutex, calls remove_chunk, then unlocks.
+ * Used by CUDA memory free hooks.
+ * 
+ * @param dptr Device pointer to free
+ * @return 0 on success, -1 on failure
+ */
 int free_raw(CUdeviceptr dptr) {
     pthread_mutex_lock(&mutex);
     unsigned int tmp = remove_chunk(device_overallocated, dptr);
@@ -231,6 +378,17 @@ int free_raw(CUdeviceptr dptr) {
     return tmp;
 }
 
+/**
+ * @brief Remove an async allocation chunk and free it
+ * 
+ * Similar to remove_chunk but for asynchronous allocations. Frees via
+ * cuMemFreeAsync and updates the async allocation list limit.
+ * 
+ * @param a_list Async allocation list
+ * @param dptr Device pointer to free
+ * @param hStream CUDA stream for async operation
+ * @return 0 on success, -1 if chunk not found
+ */
 int remove_chunk_async(
     allocated_list *a_list, CUdeviceptr dptr, CUstream hStream) {
     size_t t_size;
@@ -253,6 +411,13 @@ int remove_chunk_async(
     return -1;
 }
 
+/**
+ * @brief Thread-safe wrapper for remove_chunk_async
+ * 
+ * @param dptr Device pointer to free
+ * @param hStream CUDA stream for async operation
+ * @return 0 on success, -1 on failure
+ */
 int free_raw_async(CUdeviceptr dptr, CUstream hStream) {
     pthread_mutex_lock(&mutex);
     unsigned int tmp = remove_chunk_async(device_allocasync, dptr, hStream);
@@ -260,6 +425,17 @@ int free_raw_async(CUdeviceptr dptr, CUstream hStream) {
     return tmp;
 }
 
+/**
+ * @brief Allocate memory asynchronously and track it
+ * 
+ * Performs OOM check, allocates via cuMemAllocAsync, and handles memory
+ * pool limits. Tracks the allocation in the async list.
+ * 
+ * @param address Output parameter for allocated device pointer
+ * @param size Size to allocate
+ * @param hStream CUDA stream for async operation
+ * @return 0 on success, -1 if limit exceeded or allocation failed
+ */
 int add_chunk_async(CUdeviceptr *address, size_t size, CUstream hStream) {
     size_t addr=0;
     size_t allocsize;
@@ -304,6 +480,14 @@ int add_chunk_async(CUdeviceptr *address, size_t size, CUstream hStream) {
     return 0;
 }
 
+/**
+ * @brief Thread-safe wrapper for add_chunk_async
+ * 
+ * @param dptr Output parameter for allocated device pointer
+ * @param size Size to allocate
+ * @param hStream CUDA stream for async operation
+ * @return 0 on success, error code on failure
+ */
 int allocate_async_raw(CUdeviceptr *dptr, size_t size, CUstream hStream) {
     int tmp;
     pthread_mutex_lock(&mutex);

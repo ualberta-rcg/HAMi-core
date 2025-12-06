@@ -1,3 +1,24 @@
+/**
+ * @file multiprocess_memory_limit.c
+ * @brief Multi-process shared memory coordination for GPU memory limits
+ * 
+ * This is the core of SoftMig's multi-process coordination system. It manages
+ * a shared memory region (mmap) that allows all processes within a SLURM job
+ * to coordinate GPU memory usage. Key features:
+ * - Shared memory region with process slots for tracking per-process usage
+ * - Memory limit enforcement across all processes in a job
+ * - SM (Streaming Multiprocessor) utilization tracking
+ * - Process registration and cleanup
+ * 
+ * SLURM-specific: Uses SLURM_JOB_ID to create job-specific shared memory files
+ * in SLURM_TMPDIR, ensuring processes in the same job share the same region
+ * while different jobs are isolated.
+ * 
+ * @authors Rahim Khoja, Karim Ali
+ * @organization Research Computing, University of Alberta
+ * @note This is a HAMi-core fork with SLURM-specific changes for Alliance clusters
+ */
+
 #include <sys/mman.h>
 #include <sys/types.h>
 #include <sys/time.h>
@@ -47,7 +68,19 @@ size_t initial_offset=0;
 // Flag to track if softmig is disabled (when env vars are not set)
 static int softmig_disabled = -1;  // -1 = not checked yet, 0 = enabled, 1 = disabled
 
-// Helper function to check if softmig is enabled
+/**
+ * @brief Check if SoftMig is enabled (passive mode detection)
+ * 
+ * SoftMig operates in "passive mode" if no limits are configured. This allows
+ * the library to be preloaded without breaking applications that don't need
+ * GPU slicing. Checks if CUDA_DEVICE_MEMORY_LIMIT or CUDA_DEVICE_SM_LIMIT
+ * are set (via config file or environment).
+ * 
+ * SLURM-specific: Limits are typically set via config files created by the
+ * prolog script at /var/run/softmig/{jobid}.conf
+ * 
+ * @return 1 if enabled (limits configured), 0 if disabled (passive mode)
+ */
 static int is_softmig_enabled(void) {
     if (softmig_disabled == -1) {
         // First time check - see if environment variables are configured
@@ -74,6 +107,15 @@ extern size_t get_limit_from_config_or_env(const char* env_name);
 // Forward declaration - defined in config_file.c
 int is_softmig_configured(void);
 
+/**
+ * @brief Set the GPU status for the current process
+ * 
+ * Updates the status field in the shared memory region for this process.
+ * Status values: 1 = normal, 2 = swapped/suspended. Used for process
+ * coordination and suspension/resumption.
+ * 
+ * @param status Status value to set
+ */
 void set_current_gpu_status(int status){
     if (!is_softmig_enabled() || region_info.shared_region == NULL) {
         return;  // No-op when softmig is disabled
@@ -86,20 +128,46 @@ void set_current_gpu_status(int status){
         }
 }
 
+/**
+ * @brief Signal handler for SIGUSR1 - restore/resume process
+ * 
+ * Sets process status to 1 (normal/active) when resumed.
+ */
 void sig_restore_stub(int signo){
     set_current_gpu_status(1);
 }
 
+/**
+ * @brief Signal handler for SIGUSR2 - swap/suspend process
+ * 
+ * Sets process status to 2 (swapped/suspended) when suspended.
+ */
 void sig_swap_stub(int signo){
     set_current_gpu_status(2);
 }
 
-// get device memory from config file (priority) or env (fallback)
-// This is now a wrapper that calls the config file reader
+/**
+ * @brief Get memory limit from config file or environment variable
+ * 
+ * Wrapper that prioritizes config file (SLURM-specific) over environment
+ * variables. Config files are created by the SLURM prolog script.
+ * 
+ * @param env_name Environment variable name (e.g., "CUDA_DEVICE_MEMORY_LIMIT")
+ * @return Limit in bytes, or 0 if not set
+ */
 size_t get_limit_from_env(const char* env_name) {
     return get_limit_from_config_or_env(env_name);
 }
 
+/**
+ * @brief Initialize device information in shared memory
+ * 
+ * Queries NVML to get the number of GPUs and their UUIDs, storing them
+ * in the shared memory region. This allows all processes to have consistent
+ * device identification.
+ * 
+ * @return 0 on success
+ */
 int init_device_info() {
     if (!is_softmig_enabled() || region_info.shared_region == NULL) {
         return 0;  // No-op when softmig is disabled
@@ -117,6 +185,17 @@ int init_device_info() {
 }
 
 
+/**
+ * @brief Load environment variables from a config file
+ * 
+ * Reads a config file (typically created by SLURM prolog) and sets
+ * environment variables. Format: KEY=VALUE, one per line.
+ * 
+ * SLURM-specific: Used to load limits from /var/run/softmig/{jobid}.conf
+ * 
+ * @param filename Path to config file
+ * @return 0 on success
+ */
 int load_env_from_file(char *filename) {
     FILE *f=fopen(filename,"r");
     if (f==NULL)
@@ -141,6 +220,16 @@ int load_env_from_file(char *filename) {
     return 0;
 }
 
+/**
+ * @brief Initialize memory limits for all devices
+ * 
+ * Reads memory limits from config/environment for each device. Supports
+ * per-device limits (CUDA_DEVICE_MEMORY_LIMIT_0, _1, etc.) or a global
+ * limit (CUDA_DEVICE_MEMORY_LIMIT).
+ * 
+ * @param arr Array to fill with limits (one per device)
+ * @param len Number of devices
+ */
 void do_init_device_memory_limits(uint64_t* arr, int len) {
     size_t fallback_limit = get_limit_from_env(CUDA_DEVICE_MEMORY_LIMIT);
     int i;
@@ -160,6 +249,16 @@ void do_init_device_memory_limits(uint64_t* arr, int len) {
     }
 }
 
+/**
+ * @brief Initialize SM (Streaming Multiprocessor) limits for all devices
+ * 
+ * Reads SM utilization limits from config/environment. SM limits control
+ * the percentage of GPU compute resources available. Defaults to 100% if
+ * not specified.
+ * 
+ * @param arr Array to fill with SM limits (one per device, as percentage)
+ * @param len Number of devices
+ */
 void do_init_device_sm_limits(uint64_t *arr, int len) {
     size_t fallback_limit = get_limit_from_env(CUDA_DEVICE_SM_LIMIT);
     if (fallback_limit == 0) fallback_limit = 100;
@@ -180,6 +279,15 @@ void do_init_device_sm_limits(uint64_t *arr, int len) {
     }
 }
 
+/**
+ * @brief Kill all processes in the shared memory region (emergency OOM handler)
+ * 
+ * Emergency function that sends SIGKILL to all registered processes.
+ * Used as a last resort when memory limits are exceeded and cleanup
+ * fails. Should rarely be needed in normal operation.
+ * 
+ * @return 0
+ */
 int active_oom_killer() {
     if (!is_softmig_enabled() || region_info.shared_region == NULL) {
         return 0;  // No-op when softmig is disabled
@@ -191,6 +299,16 @@ int active_oom_killer() {
     return 0;
 }
 
+/**
+ * @brief Called before kernel launch for SM utilization tracking
+ * 
+ * Records the timestamp of kernel launches to enable SM utilization
+ * rate limiting. The utilization watcher thread uses this to throttle
+ * kernel launches when SM limits are exceeded.
+ * 
+ * SLURM-specific: SM limits are enforced per-job via shared memory
+ * coordination.
+ */
 void pre_launch_kernel() {
     if (!is_softmig_enabled() || region_info.shared_region == NULL) {
         return;  // No-op when softmig is disabled
@@ -237,6 +355,21 @@ size_t get_gpu_memory_monitor(const int dev) {
     return total;
 }
 
+/**
+ * @brief Get total GPU memory usage across all processes in the job
+ * 
+ * This is the critical function for multi-process memory coordination.
+ * It sums memory usage from ALL processes registered in the shared memory
+ * region for the specified device. This ensures that when one process
+ * checks OOM, it sees the total usage from all processes in the job.
+ * 
+ * SLURM-specific: All processes in the same SLURM job share the same
+ * shared memory file (via SLURM_JOB_ID), so they all see the same
+ * aggregated memory usage.
+ * 
+ * @param dev NVML device index
+ * @return Total memory usage in bytes across all processes
+ */
 size_t get_gpu_memory_usage(const int dev) {
     LOG_INFO("get_gpu_memory_usage dev=%d pid=%d",dev,getpid());
     ensure_initialized();
@@ -348,6 +481,23 @@ uint64_t nvml_get_device_memory_usage(const int dev) {
     return usage;
 }
 
+/**
+ * @brief Add memory usage for a process to the shared memory region
+ * 
+ * Updates the shared memory region to track memory allocated by a process.
+ * This is called whenever memory is allocated (via CUDA hooks) to keep the
+ * shared memory region synchronized. The usage is tracked per-process and
+ * per-device, allowing get_gpu_memory_usage() to aggregate across processes.
+ * 
+ * SLURM-specific: All processes in the same job update the same shared
+ * memory file, ensuring coordinated memory tracking.
+ * 
+ * @param pid Process ID (typically getpid())
+ * @param cudadev CUDA device index
+ * @param usage Memory size in bytes to add
+ * @param type Memory type: 0=context, 1=module, 2=data
+ * @return 0 on success, -1 if process not found in shared region
+ */
 int add_gpu_device_memory_usage(int32_t pid,int cudadev,size_t usage,int type){
     LOG_INFO("add_gpu_device_memory: pid=%d cuda_dev=%d->nvml_dev=%d usage=%lu type=%d", 
              pid, cudadev, cuda_to_nvml_map(cudadev), usage, type);
@@ -530,6 +680,16 @@ void exit_handler() {
 }
 
 
+/**
+ * @brief Acquire lock on shared memory region
+ * 
+ * Locks the semaphore protecting the shared memory region. This is critical
+ * for thread/process safety when multiple processes access the same shared
+ * memory. Uses timed wait to avoid deadlocks.
+ * 
+ * SLURM-specific: All processes in the same job compete for the same lock,
+ * ensuring atomic updates to the shared memory region.
+ */
 void lock_shrreg() {
     if (!is_softmig_enabled() || region_info.shared_region == NULL) {
         return;  // No-op when softmig is disabled
@@ -621,6 +781,17 @@ int clear_proc_slot_nolock(int do_clear) {
     return res;
 }
 
+/**
+ * @brief Register the current process in the shared memory region
+ * 
+ * Called during initialization to register this process in the shared
+ * memory region. Finds an empty slot or reuses an existing slot if the
+ * process was already registered (e.g., after fork). Initializes the
+ * process's memory tracking structures.
+ * 
+ * SLURM-specific: All processes in the same job register themselves,
+ * allowing coordinated memory tracking.
+ */
 void init_proc_slot_withlock() {
     int32_t current_pid = getpid();
     lock_shrreg();
@@ -706,6 +877,20 @@ int set_env_utilization_switch() {
     return 0;
 }
 
+/**
+ * @brief Create or attach to the shared memory region
+ * 
+ * This is the core function that sets up multi-process coordination. It:
+ * - Determines the shared memory file path based on SLURM_JOB_ID
+ * - Creates the file if it doesn't exist (first process in job)
+ * - Maps it into memory via mmap
+ * - Initializes the region structure if this is the first process
+ * - Registers the current process in the region
+ * 
+ * SLURM-specific: Uses SLURM_TMPDIR and SLURM_JOB_ID to create job-specific
+ * shared memory files, ensuring processes in the same job share the region
+ * while different jobs are isolated.
+ */
 void try_create_shrreg() {
     LOG_DEBUG("Try create shrreg")
     if (region_info.fd == -1) {

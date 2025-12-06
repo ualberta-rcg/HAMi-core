@@ -1,6 +1,24 @@
-// Config file reader for softmig
-// Reads secure config from /var/run/softmig/{jobid}_{arrayid}.conf
-// Falls back to environment variables if config file doesn't exist
+/**
+ * @file config_file.c
+ * @brief Configuration file reader for SoftMig (SLURM integration)
+ * 
+ * Reads GPU slice configuration from secure config files created by the
+ * SLURM prolog script. The prolog script creates files at:
+ * - /var/run/softmig/{jobid}.conf (regular jobs)
+ * - /var/run/softmig/{jobid}_{arrayid}.conf (array jobs)
+ * 
+ * These files contain CUDA_DEVICE_MEMORY_LIMIT and CUDA_DEVICE_SM_LIMIT
+ * values calculated from the gres/shard request. Falls back to environment
+ * variables if config files don't exist (for local testing).
+ * 
+ * SLURM-specific: This is a key part of the SLURM integration. The prolog
+ * script (prolog_softmig.sh) creates these files before each job starts,
+ * and the epilog script (epilog_softmig.sh) cleans them up after.
+ * 
+ * @authors Rahim Khoja, Karim Ali
+ * @organization Research Computing, University of Alberta
+ * @note This is a HAMi-core fork with SLURM-specific changes for Alliance clusters
+ */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -10,7 +28,14 @@
 #include <errno.h>
 #include "include/log_utils.h"
 
-// Get config file path for current SLURM job
+/**
+ * @brief Get the path to the config file for the current SLURM job
+ * 
+ * Constructs the config file path based on SLURM_JOB_ID and SLURM_ARRAY_TASK_ID.
+ * Returns empty string if not in a SLURM job (for local testing).
+ * 
+ * @return Path to config file (static buffer, or empty string if not in SLURM)
+ */
 static char* get_config_file_path(void) {
     static char config_path[512] = {0};
     static int initialized = 0;
@@ -40,8 +65,17 @@ static char* get_config_file_path(void) {
     return config_path;
 }
 
-// Read a value from config file (key=value format)
-// Returns 1 if found, 0 if not found
+/**
+ * @brief Read a value from the config file
+ * 
+ * Parses the config file (key=value format) and extracts the value for the
+ * given key. Handles comments (lines starting with #) and empty lines.
+ * 
+ * @param key Key to look for
+ * @param value Output buffer for the value
+ * @param value_size Size of the value buffer
+ * @return 1 if found, 0 if not found or config file doesn't exist
+ */
 static int read_config_value(const char* key, char* value, size_t value_size) {
     char* config_path = get_config_file_path();
     if (config_path[0] == '\0') {
@@ -82,8 +116,22 @@ static int read_config_value(const char* key, char* value, size_t value_size) {
     return 0;  // Key not found in config file
 }
 
-// Get limit from config file or environment variable
-// Priority: config file > environment variable
+/**
+ * @brief Get a limit value from config file or environment variable
+ * 
+ * This is the main function for reading GPU slice limits. It:
+ * 1. First tries to read from the SLURM config file (created by prolog)
+ * 2. Falls back to environment variable if config file doesn't exist
+ * 
+ * Supports human-readable formats: "16g", "24G", "11.5GB", etc.
+ * Converts to bytes for internal use.
+ * 
+ * SLURM-specific: Config files are created by prolog_softmig.sh based on
+ * the gres/shard request, ensuring limits match the requested slice.
+ * 
+ * @param env_name Environment variable name (e.g., "CUDA_DEVICE_MEMORY_LIMIT")
+ * @return Limit in bytes, or 0 if not set
+ */
 size_t get_limit_from_config_or_env(const char* env_name) {
     char config_value[256] = {0};
     
@@ -177,7 +225,15 @@ size_t get_limit_from_config_or_env(const char* env_name) {
     return scaled_res;
 }
 
-// Delete config file on job exit
+/**
+ * @brief Clean up config file when process exits
+ * 
+ * Called during process exit to delete the config file. This is a safety
+ * measure, though the SLURM epilog script should also clean it up.
+ * 
+ * SLURM-specific: The epilog script (epilog_softmig.sh) also deletes
+ * config files, but this ensures cleanup even if epilog fails.
+ */
 void cleanup_config_file(void) {
     char* config_path = get_config_file_path();
     if (config_path[0] != '\0') {
