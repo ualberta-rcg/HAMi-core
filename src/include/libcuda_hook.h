@@ -267,4 +267,6 @@ extern cuda_entry_t cuda_library_entry[];
 CUresult cuGetProcAddress( const char* symbol, void** pfn, int  cudaVersion, cuuint64_t flags );
 #undef cuGraphInstantiate
 CUresult cuGraphInstantiate(CUgraphExec *phGraphExec, CUgraph hGraph, CUgraphNode *phErrorNode, char *logBuffer, size_t bufferSize);
+#undef cuMemAlloc
+CUresult cuMemAlloc(CUdeviceptr* dptr, size_t bytesize);
 
