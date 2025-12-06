@@ -77,13 +77,18 @@ static inline char* get_log_file_path(void) {
     log_path[sizeof(log_path) - 1] = '\0';
     
     // Create directory if it doesn't exist (try, but don't fail if no permission)
-    char dir_path[512];
-    snprintf(dir_path, sizeof(dir_path), "%s", log_path);
-    dir_path[sizeof(dir_path) - 1] = '\0';
-    char* last_slash = strrchr(dir_path, '/');
+    // Find the directory portion of the path (everything before the last '/')
+    char* last_slash = strrchr(log_path, '/');
     if (last_slash != NULL) {
-        *last_slash = '\0';
-        mkdir(dir_path, 0755);  // Ignore errors - may not have permission
+        // Temporarily null-terminate at the last slash to get directory path
+        size_t dir_len = last_slash - log_path;
+        if (dir_len < sizeof(log_path)) {
+            char dir_path[512];
+            size_t copy_len = (dir_len < sizeof(dir_path) - 1) ? dir_len : sizeof(dir_path) - 1;
+            memcpy(dir_path, log_path, copy_len);
+            dir_path[copy_len] = '\0';
+            mkdir(dir_path, 0755);  // Ignore errors - may not have permission
+        }
     }
     
     // Fallback to SLURM_TMPDIR only (not regular /tmp) if /var/log not writable
